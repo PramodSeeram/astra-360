@@ -1,3 +1,3 @@
-# Welcome to your Lovable project
+# Astra 360 - UI
 
 TODO: Document your project here

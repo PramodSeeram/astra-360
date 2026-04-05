@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import OnboardingView from "@/components/OnboardingView";
-import DashboardView from "@/components/DashboardView";
-import ChatView from "@/components/ChatView";
-import AlertsView from "@/components/AlertsView";
-import ProfileView from "@/components/ProfileView";
-import BottomNav from "@/components/BottomNav";
-import ScamAlertModal from "@/components/ScamAlertModal";
+import OnboardingView from "@/UI/OnboardingView";
+import DashboardView from "@/UI/DashboardView";
+import ChatView from "@/UI/ChatView";
+import AlertsView from "@/UI/AlertsView";
+import ProfileView from "@/UI/ProfileView";
+import BottomNav from "@/UI/BottomNav";
+import ScamAlertModal from "@/UI/ScamAlertModal";
 
 type View = "onboarding" | "dashboard" | "chat" | "alerts" | "profile";
 type Tab = "home" | "chat" | "alerts" | "profile";
