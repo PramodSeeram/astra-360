@@ -3,6 +3,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import OnboardingView from "@/components/OnboardingView";
 import DashboardView from "@/components/DashboardView";
 import ChatView from "@/components/ChatView";
+import AlertsView from "@/components/AlertsView";
+import ProfileView from "@/components/ProfileView";
 import BottomNav from "@/components/BottomNav";
 import ScamAlertModal from "@/components/ScamAlertModal";
 
@@ -42,6 +44,12 @@ const Index = () => {
     setActiveTab("home");
   };
 
+  const handleLogout = () => {
+    setLoggedIn(false);
+    setView("onboarding");
+    setActiveTab("home");
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <AnimatePresence mode="wait">
@@ -72,17 +80,25 @@ const Index = () => {
           >
             <ChatView initialAgent={chatAgent} onBack={handleChatBack} />
           </motion.div>
-        ) : (
+        ) : view === "alerts" ? (
           <motion.div
-            key="placeholder"
+            key="alerts"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="flex min-h-screen items-center justify-center pb-20"
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
           >
-            <div className="text-center text-muted-foreground">
-              <p className="font-display text-lg font-semibold capitalize">{view}</p>
-              <p className="text-sm mt-1">Coming soon</p>
-            </div>
+            <AlertsView />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="profile"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <ProfileView onLogout={handleLogout} />
           </motion.div>
         )}
       </AnimatePresence>
