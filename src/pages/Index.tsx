@@ -1,16 +1,97 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import OnboardingView from "@/components/OnboardingView";
+import DashboardView from "@/components/DashboardView";
+import ChatView from "@/components/ChatView";
+import BottomNav from "@/components/BottomNav";
+import ScamAlertModal from "@/components/ScamAlertModal";
 
-// IMPORTANT: Fully REPLACE this with your own code
-const PlaceholderIndex = () => {
-  // PLACEHOLDER: Replace this entire return statement with the user's app.
-  // The inline background color is intentionally not part of the design system.
+type View = "onboarding" | "dashboard" | "chat" | "alerts" | "profile";
+type Tab = "home" | "chat" | "alerts" | "profile";
+
+const Index = () => {
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [view, setView] = useState<View>("onboarding");
+  const [activeTab, setActiveTab] = useState<Tab>("home");
+  const [chatAgent, setChatAgent] = useState<string | undefined>();
+  const [scamOpen, setScamOpen] = useState(false);
+
+  const handleLogin = () => {
+    setLoggedIn(true);
+    setView("dashboard");
+    setActiveTab("home");
+  };
+
+  const handleAgentClick = (agent: string) => {
+    setChatAgent(agent);
+    setView("chat");
+    setActiveTab("chat");
+  };
+
+  const handleTabChange = (tab: Tab) => {
+    setActiveTab(tab);
+    if (tab === "home") setView("dashboard");
+    else if (tab === "chat") {
+      setChatAgent(undefined);
+      setView("chat");
+    } else setView(tab);
+  };
+
+  const handleChatBack = () => {
+    setView("dashboard");
+    setActiveTab("home");
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center" style={{ backgroundColor: '#fcfbf8' }}>
-      <img data-lovable-blank-page-placeholder="REMOVE_THIS" src="/placeholder.svg" alt="Your app will live here!" />
+    <div className="min-h-screen bg-background">
+      <AnimatePresence mode="wait">
+        {!loggedIn ? (
+          <motion.div key="onboarding" exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+            <OnboardingView onComplete={handleLogin} />
+          </motion.div>
+        ) : view === "dashboard" ? (
+          <motion.div
+            key="dashboard"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <DashboardView
+              onAgentClick={handleAgentClick}
+              onTriggerScam={() => setScamOpen(true)}
+            />
+          </motion.div>
+        ) : view === "chat" ? (
+          <motion.div
+            key="chat"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ duration: 0.25 }}
+          >
+            <ChatView initialAgent={chatAgent} onBack={handleChatBack} />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="placeholder"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex min-h-screen items-center justify-center pb-20"
+          >
+            <div className="text-center text-muted-foreground">
+              <p className="font-display text-lg font-semibold capitalize">{view}</p>
+              <p className="text-sm mt-1">Coming soon</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {loggedIn && <BottomNav active={activeTab} onChange={handleTabChange} />}
+
+      <ScamAlertModal open={scamOpen} onClose={() => setScamOpen(false)} />
     </div>
   );
 };
-
-const Index = PlaceholderIndex;
 
 export default Index;
