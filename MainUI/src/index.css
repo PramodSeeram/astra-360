@@ -1,0 +1,126 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 7%;
+    --foreground: 0 0% 100%;
+
+    --card: 0 0% 12%;
+    --card-foreground: 0 0% 100%;
+
+    --popover: 0 0% 14%;
+    --popover-foreground: 0 0% 100%;
+
+    --primary: 72 100% 50%;
+    --primary-foreground: 0 0% 0%;
+
+    --secondary: 0 0% 16%;
+    --secondary-foreground: 0 0% 85%;
+
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 63%;
+
+    --accent: 72 100% 50%;
+    --accent-foreground: 0 0% 0%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 18%;
+    --input: 0 0% 18%;
+    --ring: 72 100% 50%;
+
+    --radius: 1rem;
+
+    /* Custom tokens */
+    --neon: 72 100% 50%;
+    --neon-glow: 72 100% 60%;
+    --neon-dim: 72 60% 30%;
+    --surface-glass: 0 0% 12%;
+    --surface-raised: 0 0% 14%;
+    --warning: 30 90% 55%;
+    --warning-foreground: 0 0% 100%;
+    --danger: 0 72% 55%;
+    --danger-foreground: 0 0% 100%;
+
+    --shadow-neu-outer: 6px 6px 16px hsl(0 0% 4% / 0.7), -4px -4px 12px hsl(0 0% 18% / 0.4);
+    --shadow-neu-inner: inset 2px 2px 6px hsl(0 0% 4% / 0.5), inset -2px -2px 6px hsl(0 0% 20% / 0.3);
+    --shadow-neon-glow: 0 0 20px hsl(72 100% 50% / 0.25), 0 0 60px hsl(72 100% 50% / 0.1);
+
+    --font-display: 'Outfit', system-ui, sans-serif;
+    --font-body: 'Outfit', system-ui, sans-serif;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-body);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-card/60 backdrop-blur-xl border border-border/50;
+  }
+
+  .neu-raised {
+    background: hsl(var(--surface-raised));
+    box-shadow: var(--shadow-neu-outer);
+  }
+
+  .neu-pressed {
+    background: hsl(var(--surface-raised));
+    box-shadow: var(--shadow-neu-inner);
+  }
+
+  .neon-glow {
+    box-shadow: var(--shadow-neon-glow);
+  }
+
+  .gradient-neon {
+    background: linear-gradient(135deg, hsl(var(--neon)), hsl(var(--neon-glow)));
+  }
+
+  .text-gradient-neon {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, hsl(var(--neon)), hsl(var(--neon-glow)));
+  }
+
+  /* Legacy aliases */
+  .teal-glow { box-shadow: var(--shadow-neon-glow); }
+  .gradient-teal { background: linear-gradient(135deg, hsl(var(--neon)), hsl(var(--neon-glow))); }
+  .text-gradient-teal {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, hsl(var(--neon)), hsl(var(--neon-glow)));
+  }
+}
+
+/* Credit score ring animation */
+@keyframes score-fill {
+  from { stroke-dashoffset: 283; }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 2px;
+}
