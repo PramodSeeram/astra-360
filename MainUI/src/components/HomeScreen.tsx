@@ -1,9 +1,10 @@
 import { motion } from "framer-motion";
-import { Bell, TrendingUp, AlertTriangle, CheckCircle2, Brain, ChevronRight, Sparkles } from "lucide-react";
+import { Bell, TrendingUp, AlertTriangle, CheckCircle2, Brain, ChevronRight, Sparkles, Upload } from "lucide-react";
 
 interface Props {
   onAgentClick: (agent: string) => void;
   onNavigate?: (view: string) => void;
+  isEmpty?: boolean;
 }
 
 const insights = [
@@ -65,7 +66,7 @@ const typeStyles = {
   },
 };
 
-const HomeScreen = ({ onAgentClick, onNavigate }: Props) => {
+const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
   return (
     <div className="min-h-screen pb-28 pt-4 px-4 max-w-lg mx-auto">
       {/* Header */}
@@ -144,23 +145,32 @@ const HomeScreen = ({ onAgentClick, onNavigate }: Props) => {
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.3, type: "spring", stiffness: 200 }}
           >
-            ₹1,20,000
+            {isEmpty ? "₹0" : "₹1,20,000"}
           </motion.p>
-          <div className="flex items-center gap-2 mt-2">
-            <span className="inline-flex items-center gap-1 text-xs text-emerald-400 bg-emerald-400/10 rounded-full px-2.5 py-0.5">
-              <TrendingUp size={12} />
-              +12.4%
-            </span>
-            <span className="text-xs text-gray-500">vs last month</span>
-          </div>
+          {!isEmpty && (
+            <div className="flex items-center gap-2 mt-2">
+              <span className="inline-flex items-center gap-1 text-xs text-emerald-400 bg-emerald-400/10 rounded-full px-2.5 py-0.5">
+                <TrendingUp size={12} />
+                +12.4%
+              </span>
+              <span className="text-xs text-gray-500">vs last month</span>
+            </div>
+          )}
 
           {/* Mini stats row */}
           <div className="mt-5 grid grid-cols-3 gap-3">
-            {[
-              { label: "Savings", value: "₹85,000", accent: false },
-              { label: "Investments", value: "₹30,000", accent: false },
-              { label: "Credit Due", value: "₹5,000", accent: true },
-            ].map((stat, i) => (
+            {(isEmpty
+              ? [
+                  { label: "Savings", value: "₹0", accent: false },
+                  { label: "Investments", value: "₹0", accent: false },
+                  { label: "Credit Due", value: "₹0", accent: false },
+                ]
+              : [
+                  { label: "Savings", value: "₹85,000", accent: false },
+                  { label: "Investments", value: "₹30,000", accent: false },
+                  { label: "Credit Due", value: "₹5,000", accent: true },
+                ]
+            ).map((stat, i) => (
               <div
                 key={i}
                 className="rounded-xl bg-white/5 border border-white/5 px-3 py-2.5 text-center"
@@ -235,56 +245,80 @@ const HomeScreen = ({ onAgentClick, onNavigate }: Props) => {
         <ChevronRight size={16} className="text-gray-500 shrink-0" />
       </motion.button>
 
-      {/* AI Insights Feed */}
-      <motion.div
-        initial={{ opacity: 0, y: 15 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
-      >
-        <div className="flex items-center gap-2 mb-4">
-          <Brain size={16} className="text-[#CCFF00]" />
-          <h2 className="font-display text-xs font-semibold text-gray-400 uppercase tracking-widest">
-            Latest Brain Insights
-          </h2>
-        </div>
+      {/* AI Insights Feed or Empty State */}
+      {isEmpty ? (
+        <motion.div
+          initial={{ opacity: 0, y: 15 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+          className="rounded-2xl bg-[#1E1E1E] border border-white/10 p-8 text-center"
+        >
+          <div className="flex justify-center mb-4">
+            <div className="h-16 w-16 rounded-2xl bg-[#CCFF00]/10 flex items-center justify-center">
+              <Upload size={28} className="text-[#CCFF00]" />
+            </div>
+          </div>
+          <h3 className="font-display text-lg font-bold text-white mb-2">
+            Welcome to Astra 360!
+          </h3>
+          <p className="text-sm text-gray-400 leading-relaxed mb-4">
+            Upload your financial documents to get started. We'll analyze your accounts, investments, and bills to give you personalized AI insights.
+          </p>
+          <button className="rounded-xl bg-[#CCFF00] px-6 py-3 text-sm font-semibold text-black transition-all hover:opacity-90 active:scale-[0.98]">
+            Upload Documents
+          </button>
+        </motion.div>
+      ) : (
+        <motion.div
+          initial={{ opacity: 0, y: 15 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+        >
+          <div className="flex items-center gap-2 mb-4">
+            <Brain size={16} className="text-[#CCFF00]" />
+            <h2 className="font-display text-xs font-semibold text-gray-400 uppercase tracking-widest">
+              Latest Brain Insights
+            </h2>
+          </div>
 
-        <div className="space-y-3">
-          {insights.map((insight, i) => {
-            const style = typeStyles[insight.type];
-            return (
-              <motion.div
-                key={insight.id}
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.35 + i * 0.07 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => {
-                  if (insight.action === "bills" && onNavigate) {
-                    onNavigate("bills");
-                  }
-                }}
-                className={`rounded-2xl bg-[#1E1E1E] border ${style.border} p-4 cursor-pointer transition-all hover:border-white/15`}
-              >
-                <div className="flex gap-3">
-                  <div
-                    className={`shrink-0 flex h-8 w-8 items-center justify-center rounded-xl ${style.bg}`}
-                  >
-                    <insight.icon size={14} className={style.iconColor} />
+          <div className="space-y-3">
+            {insights.map((insight, i) => {
+              const style = typeStyles[insight.type];
+              return (
+                <motion.div
+                  key={insight.id}
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.35 + i * 0.07 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => {
+                    if (insight.action === "bills" && onNavigate) {
+                      onNavigate("bills");
+                    }
+                  }}
+                  className={`rounded-2xl bg-[#1E1E1E] border ${style.border} p-4 cursor-pointer transition-all hover:border-white/15`}
+                >
+                  <div className="flex gap-3">
+                    <div
+                      className={`shrink-0 flex h-8 w-8 items-center justify-center rounded-xl ${style.bg}`}
+                    >
+                      <insight.icon size={14} className={style.iconColor} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[13px] text-white leading-relaxed font-medium">
+                        {insight.text}
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-2">
+                        {insight.time}
+                      </p>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[13px] text-white leading-relaxed font-medium">
-                      {insight.text}
-                    </p>
-                    <p className="text-[10px] text-gray-500 mt-2">
-                      {insight.time}
-                    </p>
-                  </div>
-                </div>
-              </motion.div>
-            );
-          })}
-        </div>
-      </motion.div>
+                </motion.div>
+              );
+            })}
+          </div>
+        </motion.div>
+      )}
     </div>
   );
 };

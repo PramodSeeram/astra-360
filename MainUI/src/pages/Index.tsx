@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import OnboardingView from "@/components/OnboardingView";
 import HomeScreen from "@/components/HomeScreen";
@@ -22,11 +22,25 @@ const Index = () => {
   const [chatInitialMessage, setChatInitialMessage] = useState<string | undefined>();
   const [scamOpen, setScamOpen] = useState(false);
   const [prevTab, setPrevTab] = useState<Tab>("home");
+  const [userId, setUserId] = useState<string>("");
+  const [isNewUser, setIsNewUser] = useState(true);
 
-  const handleLogin = () => {
+  useEffect(() => {
+    const storedUserId = localStorage.getItem("astra_user_id");
+    if (storedUserId) {
+      setUserId(storedUserId);
+      setLoggedIn(true);
+      setView("home");
+      setIsNewUser(false);
+    }
+  }, []);
+
+  const handleLogin = (newUserId: string) => {
+    setUserId(newUserId);
     setLoggedIn(true);
     setView("home");
     setActiveTab("home");
+    setIsNewUser(true);
   };
 
   const handleAgentClick = (agent: string) => {
@@ -77,9 +91,13 @@ const Index = () => {
   };
 
   const handleLogout = () => {
+    localStorage.removeItem("astra_user_id");
+    localStorage.removeItem("astra_phone");
     setLoggedIn(false);
+    setUserId("");
     setView("onboarding");
     setActiveTab("home");
+    setIsNewUser(true);
   };
 
   // Should we show the bottom nav? Hide it on chat and credit-score detail views
@@ -94,7 +112,7 @@ const Index = () => {
           </motion.div>
         ) : view === "home" ? (
           <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
-            <HomeScreen onAgentClick={handleAgentClick} onNavigate={handleNavigate} />
+            <HomeScreen onAgentClick={handleAgentClick} onNavigate={handleNavigate} isEmpty={isNewUser} />
           </motion.div>
         ) : view === "calendar" ? (
           <motion.div key="calendar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
