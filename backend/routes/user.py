@@ -29,7 +29,7 @@ def submit_kyc(req: KycRequest):
 
     print(f"\n{'='*40}")
     print(f"  [KYC] {req.first_name} {req.last_name}")
-    print(f"  [PAN] {req.pan} → {pan_type}")
+    print(f"  [PAN] {req.pan} -> {pan_type}")
     print(f"{'='*40}\n")
 
     return KycResponse(status="kyc_completed", pan_type=pan_type)

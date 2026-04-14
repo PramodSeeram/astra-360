@@ -1,83 +1,7 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronLeft, ChevronRight, Settings2 } from "lucide-react";
-
-/* ─── Types ─── */
-interface FinancialEvent {
-  id: number;
-  date: number; // day of month
-  type: "bill" | "insurance" | "investment";
-  tag: string;
-  title: string;
-  subtitle: string;
-  amount?: string;
-}
-
-/* ─── Data ─── */
-const events: FinancialEvent[] = [
-  {
-    id: 1,
-    date: 9,
-    type: "bill",
-    tag: "💳 CREDIT BILL",
-    title: "HDFC Regalia Statement",
-    subtitle: "Due by 18:00",
-    amount: "₹45,321",
-  },
-  {
-    id: 2,
-    date: 9,
-    type: "insurance",
-    tag: "🛡️ CLAIM UPDATE",
-    title: "Virtus GT Bumper Assessment",
-    subtitle: "Surveyor assigned for 14:00",
-  },
-  {
-    id: 3,
-    date: 9,
-    type: "investment",
-    tag: "📈 SIP DEDUCTION",
-    title: "Axis Bluechip Fund",
-    subtitle: "Auto-debit from SBI",
-    amount: "₹5,000",
-  },
-  {
-    id: 4,
-    date: 15,
-    type: "bill",
-    tag: "💳 CREDIT BILL",
-    title: "ICICI Amazon Pay Statement",
-    subtitle: "Due by 23:59",
-    amount: "₹12,800",
-  },
-  {
-    id: 5,
-    date: 18,
-    type: "investment",
-    tag: "📈 SIP DEDUCTION",
-    title: "Mirae Asset Large Cap",
-    subtitle: "Auto-debit from HDFC",
-    amount: "₹10,000",
-  },
-  {
-    id: 6,
-    date: 22,
-    type: "insurance",
-    tag: "🛡️ PREMIUM DUE",
-    title: "LIC Term Plan Premium",
-    subtitle: "Annual renewal",
-    amount: "₹24,500",
-  },
-  {
-    id: 7,
-    date: 28,
-    type: "bill",
-    tag: "💳 EMI",
-    title: "Car Loan EMI — SBI",
-    subtitle: "Auto-debit scheduled",
-    amount: "₹18,200",
-  },
-];
+import { ChevronLeft, ChevronRight, Settings2, CalendarDays, Loader2 } from "lucide-react";
+import { api, CalendarData, CalendarEvent } from "@/lib/api";
 
 /* ─── Style maps ─── */
 const typeColors = {
@@ -133,6 +57,24 @@ const CalendarScreen = () => {
   const [selectedDate, setSelectedDate] = useState(today.getDate());
   const [viewMode, setViewMode] = useState<"Day" | "Week" | "Month">("Month");
 
+  const [data, setData] = useState<CalendarData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const userId = localStorage.getItem("astra_user_id");
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
+    api.getCalendar(userId)
+      .then((res) => setData(res))
+      .catch((err) => console.error("[CalendarScreen] API error:", err))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const events: CalendarEvent[] = data?.events ?? [];
+
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfMonth(year, month);
   const isCurrentMonth =
@@ -140,13 +82,13 @@ const CalendarScreen = () => {
 
   /* Build event lookup by date */
   const eventsByDate = useMemo(() => {
-    const map: Record<number, FinancialEvent[]> = {};
+    const map: Record<number, CalendarEvent[]> = {};
     events.forEach((e) => {
       if (!map[e.date]) map[e.date] = [];
       map[e.date].push(e);
     });
     return map;
-  }, []);
+  }, [events]);
 
   /* Filtered events for selected date */
   const selectedEvents = eventsByDate[selectedDate] ?? [];
@@ -170,6 +112,17 @@ const CalendarScreen = () => {
     }
     setSelectedDate(1);
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 size={32} className="text-[#CCFF00] animate-spin" />
+      </div>
+    );
+  }
+
+  const hasData = data?.has_data ?? false;
+  const emptyMessage = data?.message || "No financial events yet. Your bill due dates, SIP debits, and EMIs will appear here automatically.";
 
   return (
     <div className="min-h-screen pb-28 pt-4 px-4 max-w-lg mx-auto">
@@ -290,7 +243,7 @@ const CalendarScreen = () => {
                       .map((ev, idx) => (
                         <span
                           key={idx}
-                          className={`h-1 w-2.5 rounded-full ${typeColors[ev.type].dot}`}
+                          className={`h-1 w-2.5 rounded-full ${typeColors[ev.type]?.dot || "bg-gray-400"}`}
                         />
                       ))}
                   </div>
@@ -308,9 +261,7 @@ const CalendarScreen = () => {
         transition={{ delay: 0.2 }}
       >
         <h3 className="font-display text-xs font-semibold text-gray-400 uppercase tracking-widest mb-4">
-          {selectedEvents.length > 0
-            ? `Your Timeline — ${MONTH_NAMES[month]} ${selectedDate}`
-            : `Your Timeline — ${MONTH_NAMES[month]} ${selectedDate}`}
+          Your Timeline — {MONTH_NAMES[month]} {selectedDate}
         </h3>
 
         <AnimatePresence mode="wait">
@@ -328,17 +279,32 @@ const CalendarScreen = () => {
                 animate={{ opacity: 1, y: 0 }}
                 className="rounded-2xl bg-[#1E1E1E] border border-white/5 py-10 flex flex-col items-center justify-center"
               >
-                <p className="text-3xl mb-2">📅</p>
-                <p className="text-sm text-gray-400">
-                  No events on this date
-                </p>
-                <p className="text-[10px] text-gray-500 mt-1">
-                  Tap a date with colored markers to see events
-                </p>
+                {!hasData ? (
+                  <>
+                    <div className="flex justify-center mb-3">
+                      <div className="h-14 w-14 rounded-2xl bg-[#CCFF00]/10 flex items-center justify-center">
+                        <CalendarDays size={24} className="text-[#CCFF00]" />
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-400 text-center px-6">
+                      {emptyMessage}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-3xl mb-2">📅</p>
+                    <p className="text-sm text-gray-400">
+                      No events on this date
+                    </p>
+                    <p className="text-[10px] text-gray-500 mt-1">
+                      Tap a date with colored markers to see events
+                    </p>
+                  </>
+                )}
               </motion.div>
             ) : (
               selectedEvents.map((event, i) => {
-                const colors = typeColors[event.type];
+                const colors = typeColors[event.type] || typeColors.bill;
                 return (
                   <motion.div
                     key={event.id}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   User,
@@ -11,42 +11,13 @@ import {
   CheckCircle2,
   Smartphone,
   KeyRound,
+  Loader2,
 } from "lucide-react";
+import { api, ProfileData } from "@/lib/api";
 
 interface Props {
   onLogout: () => void;
 }
-
-const linkedAccounts = [
-  {
-    bank: "State Bank of India",
-    shortName: "SBI",
-    type: "Savings Account",
-    accNo: "••••6789",
-    color: "bg-blue-600",
-  },
-  {
-    bank: "HDFC Bank",
-    shortName: "HDFC",
-    type: "Savings Account",
-    accNo: "••••4321",
-    color: "bg-red-600",
-  },
-  {
-    bank: "HDFC Bank",
-    shortName: "HDFC",
-    type: "Credit Card",
-    accNo: "••••4823",
-    color: "bg-red-600",
-  },
-  {
-    bank: "ICICI Bank",
-    shortName: "ICICI",
-    type: "Credit Card",
-    accNo: "••••8905",
-    color: "bg-orange-600",
-  },
-];
 
 interface SecuritySetting {
   icon: typeof Shield;
@@ -111,6 +82,8 @@ const NeonToggle = ({
 );
 
 const ProfileScreen = ({ onLogout }: Props) => {
+  const [data, setData] = useState<ProfileData | null>(null);
+  const [loading, setLoading] = useState(true);
   const [toggles, setToggles] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
     securitySettings.forEach((s) => {
@@ -119,9 +92,37 @@ const ProfileScreen = ({ onLogout }: Props) => {
     return initial;
   });
 
+  useEffect(() => {
+    const userId = localStorage.getItem("astra_user_id");
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
+    api.getProfile(userId)
+      .then((res) => setData(res))
+      .catch((err) => console.error("[ProfileScreen] API error:", err))
+      .finally(() => setLoading(false));
+  }, []);
+
   const handleToggle = (label: string) => {
     setToggles((prev) => ({ ...prev, [label]: !prev[label] }));
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 size={32} className="text-[#CCFF00] animate-spin" />
+      </div>
+    );
+  }
+
+  const name = data?.full_name || "User";
+  const initials = data?.initials || "U";
+  const phone = data?.phone || "No phone linked";
+  const joinedDate = data?.joined_at ? new Date(data.joined_at).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : "Recently";
+  const linkedAccounts = data?.linked_accounts || [];
+  const hasData = data?.has_data ?? false;
 
   return (
     <div className="min-h-screen pb-28 pt-6 px-4 max-w-lg mx-auto">
@@ -135,7 +136,7 @@ const ProfileScreen = ({ onLogout }: Props) => {
           <div className="h-22 w-22 rounded-full bg-gradient-to-br from-[#CCFF00]/20 to-transparent border-2 border-[#CCFF00] flex items-center justify-center shadow-[0_0_25px_rgba(204,255,0,0.2)]"
                style={{ height: '5.5rem', width: '5.5rem' }}>
             <span className="font-display text-2xl font-bold text-white">
-              PK
+              {initials}
             </span>
           </div>
           <motion.div
@@ -148,10 +149,10 @@ const ProfileScreen = ({ onLogout }: Props) => {
           </motion.div>
         </div>
         <h1 className="font-display text-xl font-bold text-white">
-          Pramod Kumar
+          {name}
         </h1>
-        <p className="text-sm text-gray-400 mt-0.5">+91 98765 43210</p>
-        <p className="text-xs text-gray-500 mt-1">Joined Dec 2024</p>
+        <p className="text-sm text-gray-400 mt-0.5">{phone}</p>
+        <p className="text-xs text-gray-500 mt-1">Joined {joinedDate}</p>
       </motion.div>
 
       {/* Linked Accounts */}
@@ -169,35 +170,43 @@ const ProfileScreen = ({ onLogout }: Props) => {
         </div>
 
         <div className="space-y-2.5">
-          {linkedAccounts.map((acc, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, x: -15 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.15 + i * 0.06 }}
-              className="rounded-2xl bg-[#1E1E1E] border border-white/5 px-4 py-3.5 flex items-center gap-3"
-            >
-              <div
-                className={`h-10 w-10 rounded-xl ${acc.color} flex items-center justify-center shrink-0`}
+          {!hasData || linkedAccounts.length === 0 ? (
+            <div className="rounded-2xl bg-[#1E1E1E] border border-dashed border-white/10 p-8 text-center">
+              <p className="text-sm text-gray-500">
+                {data?.message || "Link your bank accounts via Account Aggregator to see them here."}
+              </p>
+            </div>
+          ) : (
+            linkedAccounts.map((acc, i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, x: -15 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.15 + i * 0.06 }}
+                className="rounded-2xl bg-[#1E1E1E] border border-white/5 px-4 py-3.5 flex items-center gap-3"
               >
-                <span className="text-white font-display text-[10px] font-bold">
-                  {acc.shortName}
+                <div
+                  className={`h-10 w-10 rounded-xl bg-gray-700 flex items-center justify-center shrink-0`}
+                >
+                  <span className="text-white font-display text-[10px] font-bold">
+                    {acc.short_name}
+                  </span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-display text-sm font-semibold text-white truncate">
+                    {acc.bank}
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    {acc.type} • {acc.acc_no}
+                  </p>
+                </div>
+                <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-400/10 rounded-full px-2.5 py-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  Linked
                 </span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-display text-sm font-semibold text-white truncate">
-                  {acc.bank}
-                </p>
-                <p className="text-xs text-gray-400">
-                  {acc.type} • {acc.accNo}
-                </p>
-              </div>
-              <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-400/10 rounded-full px-2.5 py-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                Linked
-              </span>
-            </motion.div>
-          ))}
+              </motion.div>
+            ))
+          )}
         </div>
 
         <motion.button

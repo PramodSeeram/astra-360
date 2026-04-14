@@ -1,81 +1,85 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { CreditCard, ChevronRight, Plus, Eye, EyeOff, Wifi } from "lucide-react";
-
-interface CardData {
-  id: number;
-  bank: string;
-  type: string;
-  number: string;
-  name: string;
-  network: "VISA" | "Mastercard" | "RuPay";
-  expiry: string;
-  color1: string;
-  color2: string;
-  limit?: string;
-  used?: string;
-}
-
-const cards: CardData[] = [
-  {
-    id: 1,
-    bank: "ICICI Bank",
-    type: "AMAZON PAY",
-    number: "4532 •••• •••• 8905",
-    name: "Pramod Kumar",
-    network: "VISA",
-    expiry: "08/28",
-    color1: "#1a1a2e",
-    color2: "#16213e",
-    limit: "₹2,00,000",
-    used: "₹45,321",
-  },
-  {
-    id: 2,
-    bank: "HDFC Bank",
-    type: "REGALIA",
-    number: "5412 •••• •••• 4823",
-    name: "Pramod Kumar",
-    network: "Mastercard",
-    expiry: "11/27",
-    color1: "#0f0c29",
-    color2: "#302b63",
-    limit: "₹5,00,000",
-    used: "₹1,23,450",
-  },
-  {
-    id: 3,
-    bank: "SBI Card",
-    type: "ELITE",
-    number: "6521 •••• •••• 3301",
-    name: "Pramod Kumar",
-    network: "VISA",
-    expiry: "03/29",
-    color1: "#1a1a1a",
-    color2: "#2d2d2d",
-    limit: "₹3,00,000",
-    used: "₹78,200",
-  },
-  {
-    id: 4,
-    bank: "Axis Bank",
-    type: "MY ZONE",
-    number: "4916 •••• •••• 7702",
-    name: "Pramod Kumar",
-    network: "VISA",
-    expiry: "06/27",
-    color1: "#1b2838",
-    color2: "#2a475e",
-    limit: "₹1,50,000",
-    used: "₹12,500",
-  },
-];
+import { CreditCard, ChevronRight, Plus, Eye, EyeOff, Wifi, Loader2 } from "lucide-react";
+import { api, CardsData, CardItem } from "@/lib/api";
 
 const CardsScreen = () => {
+  const [data, setData] = useState<CardsData | null>(null);
+  const [loading, setLoading] = useState(true);
   const [activeIndex, setActiveIndex] = useState(0);
   const [showNumber, setShowNumber] = useState(false);
 
-  const activeCard = cards[activeIndex];
+  useEffect(() => {
+    const userId = localStorage.getItem("astra_user_id");
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
+    api.getCards(userId)
+      .then((res) => setData(res))
+      .catch((err) => console.error("[CardsScreen] API error:", err))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 size={32} className="text-[#CCFF00] animate-spin" />
+      </div>
+    );
+  }
+
+  const hasData = data?.has_data ?? false;
+  const cards = data?.cards ?? [];
+  const transactions = data?.transactions ?? [];
+  const emptyMessage = data?.message || "No cards available. Link your bank accounts to see your cards here.";
+
+  // Empty state
+  if (!hasData || cards.length === 0) {
+    return (
+      <div className="min-h-screen pb-28 pt-6 px-4 max-w-lg mx-auto">
+        {/* Header */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center justify-between mb-6"
+        >
+          <div>
+            <h1 className="font-display text-2xl font-bold text-white">Your Cards</h1>
+            <p className="text-sm text-gray-400">0 cards linked</p>
+          </div>
+          <button className="flex items-center gap-1.5 rounded-full border border-[#CCFF00]/30 bg-[#CCFF00]/10 px-3.5 py-1.5 text-xs font-semibold text-[#CCFF00]">
+            <Plus size={14} />
+            Add Card
+          </button>
+        </motion.div>
+
+        {/* Empty state card */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="rounded-2xl bg-[#1E1E1E] border border-white/10 p-8 text-center"
+        >
+          <div className="flex justify-center mb-4">
+            <div className="h-16 w-16 rounded-2xl bg-[#CCFF00]/10 flex items-center justify-center">
+              <CreditCard size={28} className="text-[#CCFF00]" />
+            </div>
+          </div>
+          <h3 className="font-display text-lg font-bold text-white mb-2">
+            No Cards Available
+          </h3>
+          <p className="text-sm text-gray-400 leading-relaxed">
+            {emptyMessage}
+          </p>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Data state (for Phase 3+ when cards exist)
+  const activeCard = cards[activeIndex] || cards[0];
 
   return (
     <div className="min-h-screen pb-28 pt-6 px-4 max-w-lg mx-auto">
@@ -103,7 +107,7 @@ const CardsScreen = () => {
         className="relative h-[240px] mb-8"
       >
         <AnimatePresence mode="popLayout">
-          {cards.map((card, i) => {
+          {cards.map((card: CardItem, i: number) => {
             const offset = i - activeIndex;
             const isActive = i === activeIndex;
             const isBehind = offset > 0;
@@ -133,7 +137,7 @@ const CardsScreen = () => {
                 <div
                   className="rounded-2xl p-5 h-[210px] flex flex-col justify-between border border-white/10 relative overflow-hidden"
                   style={{
-                    background: `linear-gradient(135deg, ${card.color1}, ${card.color2})`,
+                    background: `linear-gradient(135deg, ${card.color1 || "#1a1a2e"}, ${card.color2 || "#16213e"})`,
                     boxShadow: isActive
                       ? "0 20px 40px rgba(0,0,0,0.4), 0 0 20px rgba(204,255,0,0.08)"
                       : "0 10px 20px rgba(0,0,0,0.3)",
@@ -190,7 +194,7 @@ const CardsScreen = () => {
 
       {/* Card dots indicator */}
       <div className="flex items-center justify-center gap-2 mb-6">
-        {cards.map((_, i) => (
+        {cards.map((_: CardItem, i: number) => (
           <button
             key={i}
             onClick={() => setActiveIndex(i)}
@@ -268,40 +272,38 @@ const CardsScreen = () => {
       </motion.div>
 
       {/* Recent transactions preview */}
-      <motion.div
-        initial={{ opacity: 0, y: 15 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
-      >
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-display text-xs font-semibold text-gray-400 uppercase tracking-widest">
-            Recent on this card
-          </h3>
-          <button className="text-xs text-[#CCFF00] font-medium">View All</button>
-        </div>
-        <div className="space-y-2">
-          {[
-            { name: "Swiggy", amount: "-₹450", time: "Today", emoji: "🍕" },
-            { name: "Amazon", amount: "-₹2,199", time: "Yesterday", emoji: "📦" },
-            { name: "Uber", amount: "-₹320", time: "2 days ago", emoji: "🚗" },
-          ].map((txn, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.35 + i * 0.06 }}
-              className="rounded-xl bg-[#1E1E1E] border border-white/5 p-3.5 flex items-center gap-3"
-            >
-              <span className="text-lg">{txn.emoji}</span>
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-white">{txn.name}</p>
-                <p className="text-[10px] text-gray-500">{txn.time}</p>
-              </div>
-              <p className="font-display text-sm font-bold text-white">{txn.amount}</p>
-            </motion.div>
-          ))}
-        </div>
-      </motion.div>
+      {transactions.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 15 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-display text-xs font-semibold text-gray-400 uppercase tracking-widest">
+              Recent on this card
+            </h3>
+            <button className="text-xs text-[#CCFF00] font-medium">View All</button>
+          </div>
+          <div className="space-y-2">
+            {transactions.map((txn, i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.35 + i * 0.06 }}
+                className="rounded-xl bg-[#1E1E1E] border border-white/5 p-3.5 flex items-center gap-3"
+              >
+                <span className="text-lg">{txn.emoji}</span>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-white">{txn.name}</p>
+                  <p className="text-[10px] text-gray-500">{txn.time}</p>
+                </div>
+                <p className="font-display text-sm font-bold text-white">{txn.amount}</p>
+              </motion.div>
+            ))}
+          </div>
+        </motion.div>
+      )}
     </div>
   );
 };

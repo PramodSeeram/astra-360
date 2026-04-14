@@ -1,5 +1,7 @@
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Bell, TrendingUp, AlertTriangle, CheckCircle2, Brain, ChevronRight, Sparkles, Upload } from "lucide-react";
+import { Bell, TrendingUp, AlertTriangle, CheckCircle2, Brain, ChevronRight, Sparkles, Upload, Loader2 } from "lucide-react";
+import { api, HomeSummary } from "@/lib/api";
 
 interface Props {
   onAgentClick: (agent: string) => void;
@@ -7,66 +9,68 @@ interface Props {
   isEmpty?: boolean;
 }
 
-const insights = [
-  {
-    id: 1,
-    type: "warning" as const,
-    icon: AlertTriangle,
-    text: "⚠️ House Rent of ₹18,000 is due in 3 days. Your account balance is sufficient.",
-    action: "bills",
-    time: "2 hrs ago",
-  },
-  {
-    id: 2,
-    type: "warning" as const,
-    icon: AlertTriangle,
-    text: "⚠️ TATA Power Electricity Bill of ₹2,340 is due tomorrow. Tap to pay now.",
-    action: "bills",
-    time: "5 hrs ago",
-  },
-  {
-    id: 3,
-    type: "info" as const,
-    icon: TrendingUp,
-    text: "ℹ️ Detected a new subscription: Netflix Premium at ₹649/month. Tap to review.",
-    action: "bills",
-    time: "1 day ago",
-  },
-  {
-    id: 4,
-    type: "success" as const,
-    icon: CheckCircle2,
-    text: "✅ HDFC FD of ₹50,000 maturing in 2 days. Should I reinvest it at 7.1% or move to Liquid Fund?",
-    time: "1 day ago",
-  },
-  {
-    id: 5,
-    type: "success" as const,
-    icon: CheckCircle2,
-    text: "✅ Tax-saving SIP target 80% complete. ₹30,000 more needed before March to maximize 80C.",
-    time: "2 days ago",
-  },
-];
-
 const typeStyles = {
   warning: {
     border: "border-amber-500/20",
     bg: "bg-amber-500/5",
     iconColor: "text-amber-400",
+    Icon: AlertTriangle,
   },
   success: {
     border: "border-[#CCFF00]/20",
     bg: "bg-[#CCFF00]/5",
     iconColor: "text-[#CCFF00]",
+    Icon: CheckCircle2,
   },
   info: {
     border: "border-cyan-400/20",
     bg: "bg-cyan-400/5",
     iconColor: "text-cyan-400",
+    Icon: TrendingUp,
   },
 };
 
-const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
+const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: Props) => {
+  const [data, setData] = useState<HomeSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const userId = localStorage.getItem("astra_user_id");
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
+    api.getHomeSummary(userId)
+      .then((res) => setData(res))
+      .catch((err) => console.error("[HomeScreen] API error:", err))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const isEmpty = data ? !data.has_data : isEmptyProp;
+  const firstName = data?.first_name || "User";
+  const initials = data?.initials || "U";
+  const balance = data?.balance ?? 0;
+  const savings = data?.savings ?? 0;
+  const investments = data?.investments ?? 0;
+  const creditDue = data?.credit_due ?? 0;
+  const creditScore = data?.credit_score ?? 0;
+  const insights = data?.insights ?? [];
+  const emptyMessage = data?.message || "Upload your financial documents to get started. We'll analyze your accounts, investments, and bills to give you personalized AI insights.";
+
+  const formatCurrency = (val: number) => {
+    if (val === 0) return "₹0";
+    return `₹${val.toLocaleString("en-IN")}`;
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 size={32} className="text-[#CCFF00] animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen pb-28 pt-4 px-4 max-w-lg mx-auto">
       {/* Header */}
@@ -77,12 +81,12 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
       >
         <div className="flex items-center gap-3">
           <div className="h-11 w-11 rounded-full bg-gradient-to-br from-[#CCFF00] to-[#88cc00] flex items-center justify-center text-black font-bold text-sm shadow-[0_0_15px_rgba(204,255,0,0.3)]">
-            PK
+            {initials}
           </div>
           <div>
             <p className="text-xs text-gray-400">Welcome back,</p>
             <p className="font-display text-lg font-bold text-white">
-              Pramod! 👋
+              {firstName}! 👋
             </p>
           </div>
         </div>
@@ -145,7 +149,7 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.3, type: "spring", stiffness: 200 }}
           >
-            {isEmpty ? "₹0" : "₹1,20,000"}
+            {formatCurrency(balance)}
           </motion.p>
           {!isEmpty && (
             <div className="flex items-center gap-2 mt-2">
@@ -159,18 +163,11 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
 
           {/* Mini stats row */}
           <div className="mt-5 grid grid-cols-3 gap-3">
-            {(isEmpty
-              ? [
-                  { label: "Savings", value: "₹0", accent: false },
-                  { label: "Investments", value: "₹0", accent: false },
-                  { label: "Credit Due", value: "₹0", accent: false },
-                ]
-              : [
-                  { label: "Savings", value: "₹85,000", accent: false },
-                  { label: "Investments", value: "₹30,000", accent: false },
-                  { label: "Credit Due", value: "₹5,000", accent: true },
-                ]
-            ).map((stat, i) => (
+            {[
+              { label: "Savings", value: formatCurrency(savings), accent: false },
+              { label: "Investments", value: formatCurrency(investments), accent: false },
+              { label: "Credit Due", value: formatCurrency(creditDue), accent: creditDue > 0 },
+            ].map((stat, i) => (
               <div
                 key={i}
                 className="rounded-xl bg-white/5 border border-white/5 px-3 py-2.5 text-center"
@@ -207,7 +204,7 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
               strokeWidth="6"
               strokeLinecap="round"
             />
-            {/* Filled arc - 780/900 = ~86.7% */}
+            {/* Filled arc */}
             <motion.path
               d="M 5 40 A 30 30 0 0 1 65 40"
               fill="none"
@@ -215,14 +212,14 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
               strokeWidth="6"
               strokeLinecap="round"
               initial={{ pathLength: 0 }}
-              animate={{ pathLength: 0.867 }}
+              animate={{ pathLength: creditScore > 0 ? creditScore / 900 : 0 }}
               transition={{ duration: 1.5, ease: "easeOut", delay: 0.5 }}
               style={{ filter: "drop-shadow(0 0 6px rgba(204,255,0,0.4))" }}
             />
           </svg>
           <div className="absolute inset-0 flex items-end justify-center pb-0">
             <span className="font-display text-lg font-extrabold text-white">
-              780
+              {creditScore > 0 ? creditScore : "—"}
             </span>
           </div>
         </div>
@@ -232,14 +229,16 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
             CIBIL Score
           </p>
           <p className="text-[11px] text-gray-400 mt-0.5">
-            Excellent • Updated 2 days ago
+            {creditScore > 0 ? "Excellent • Updated 2 days ago" : "Not available yet"}
           </p>
-          <div className="flex items-center gap-1.5 mt-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-[#CCFF00]" />
-            <p className="text-[10px] text-[#CCFF00] font-medium">
-              +15 pts since last month
-            </p>
-          </div>
+          {creditScore > 0 && (
+            <div className="flex items-center gap-1.5 mt-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#CCFF00]" />
+              <p className="text-[10px] text-[#CCFF00] font-medium">
+                +15 pts since last month
+              </p>
+            </div>
+          )}
         </div>
 
         <ChevronRight size={16} className="text-gray-500 shrink-0" />
@@ -262,7 +261,7 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
             Welcome to Astra 360!
           </h3>
           <p className="text-sm text-gray-400 leading-relaxed mb-4">
-            Upload your financial documents to get started. We'll analyze your accounts, investments, and bills to give you personalized AI insights.
+            {emptyMessage}
           </p>
           <button className="rounded-xl bg-[#CCFF00] px-6 py-3 text-sm font-semibold text-black transition-all hover:opacity-90 active:scale-[0.98]">
             Upload Documents
@@ -283,7 +282,8 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
 
           <div className="space-y-3">
             {insights.map((insight, i) => {
-              const style = typeStyles[insight.type];
+              const style = typeStyles[insight.type] || typeStyles.info;
+              const InsightIcon = style.Icon;
               return (
                 <motion.div
                   key={insight.id}
@@ -302,7 +302,7 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty = false }: Props) => {
                     <div
                       className={`shrink-0 flex h-8 w-8 items-center justify-center rounded-xl ${style.bg}`}
                     >
-                      <insight.icon size={14} className={style.iconColor} />
+                      <InsightIcon size={14} className={style.iconColor} />
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-[13px] text-white leading-relaxed font-medium">
