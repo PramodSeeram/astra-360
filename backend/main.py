@@ -10,6 +10,7 @@ from routes.auth import router as auth_router
 from routes.user import router as user_router
 from routes.onboarding import router as onboarding_router
 from routes.dashboard import router as dashboard_router
+from routes.rag_routes import router as rag_router
 
 app = FastAPI(title="Astra 360 Backend", version="2.0.0")
 
@@ -25,6 +26,7 @@ app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(onboarding_router)
 app.include_router(dashboard_router)
+app.include_router(rag_router)
 
 
 @app.get("/")

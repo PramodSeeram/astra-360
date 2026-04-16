@@ -10,7 +10,7 @@ async function request<T>(endpoint: string, body: Record<string, unknown>): Prom
   const data = await res.json();
 
   if (!res.ok) {
-    throw new Error(data.detail || "Something went wrong");
+    throw new Error(data.error || data.detail || "Something went wrong");
   }
 
   return data as T;
@@ -25,7 +25,7 @@ async function get<T>(endpoint: string): Promise<T> {
   const data = await res.json();
 
   if (!res.ok) {
-    throw new Error(data.detail || "Something went wrong");
+    throw new Error(data.error || data.detail || "Something went wrong");
   }
 
   return data as T;
@@ -50,6 +50,11 @@ export interface KycResponse {
 
 export interface ScanResponse {
   status: string;
+}
+
+export interface RagUploadResponse {
+  status: string;
+  chunks_processed: number;
 }
 
 // ── Dashboard Types ──
@@ -192,6 +197,24 @@ export const api = {
 
   startScan: (userId: string) =>
     request<ScanResponse>("/api/onboarding/scan", { user_id: userId }),
+
+  uploadDocument: async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const res = await fetch(`${API_BASE}/rag/upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || data.detail || "Upload failed");
+    }
+
+    return data as RagUploadResponse;
+  },
 
   // Dashboard APIs
   getHomeSummary: (userId: string) =>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Bell, TrendingUp, AlertTriangle, CheckCircle2, Brain, ChevronRight, Sparkles, Upload, Loader2 } from "lucide-react";
 import { api, HomeSummary } from "@/lib/api";
@@ -33,6 +33,9 @@ const typeStyles = {
 const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: Props) => {
   const [data, setData] = useState<HomeSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const userId = localStorage.getItem("astra_user_id");
@@ -61,6 +64,29 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: 
   const formatCurrency = (val: number) => {
     if (val === 0) return "₹0";
     return `₹${val.toLocaleString("en-IN")}`;
+  };
+
+  const handleUploadClick = () => {
+    setUploadMessage(null);
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0];
+    if (!selectedFile) return;
+
+    try {
+      setUploading(true);
+      setUploadMessage(null);
+      const response = await api.uploadDocument(selectedFile);
+      setUploadMessage(`Uploaded successfully. ${response.chunks_processed} chunk(s) processed.`);
+    } catch (error) {
+      console.error("[HomeScreen] Upload error:", error);
+      setUploadMessage(error instanceof Error ? error.message : "Upload failed");
+    } finally {
+      setUploading(false);
+      event.target.value = "";
+    }
   };
 
   if (loading) {
@@ -263,9 +289,24 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: 
           <p className="text-sm text-gray-400 leading-relaxed mb-4">
             {emptyMessage}
           </p>
-          <button className="rounded-xl bg-[#CCFF00] px-6 py-3 text-sm font-semibold text-black transition-all hover:opacity-90 active:scale-[0.98]">
-            Upload Documents
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.csv,.xls,.xlsx"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <button
+            type="button"
+            onClick={handleUploadClick}
+            disabled={uploading}
+            className="rounded-xl bg-[#CCFF00] px-6 py-3 text-sm font-semibold text-black transition-all hover:opacity-90 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {uploading ? "Uploading..." : "Upload Documents"}
           </button>
+          {uploadMessage && (
+            <p className="mt-3 text-sm text-gray-300">{uploadMessage}</p>
+          )}
         </motion.div>
       ) : (
         <motion.div
