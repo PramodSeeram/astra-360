@@ -1,0 +1,22 @@
+{
+  "balance": 50000,
+  "savings": 20000,
+  "investments": 15000,
+  "credit_due": 5000,
+  "transactions": [
+    {"date": "2023-10-01", "description": "Salary", "amount": 50000},
+    {"date": "2023-10-05", "description": "Grocery", "amount": -2000}
+  ],
+  "subscriptions": [
+    {"name": "Netflix", "amount": 499, "due_date": "2023-10-15"}
+  ],
+  "bills": [
+    {"type": "Electricity", "amount": 1500, "due_date": "2023-10-20"}
+  ],
+  "insights": [
+    "You have saved 20% of your income this month."
+  ],
+  "calendar": [
+    {"event": "Bill Payment", "date": "2023-10-20"}
+  ]
+}

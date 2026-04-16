@@ -1,32 +1,18 @@
 import asyncio
-import random
 from fastapi import APIRouter, HTTPException
-from models.schemas import ScanRequest, ScanResponse
-from services.user_service import get_user, init_financial_data
+from ..models.schemas import ScanRequest
+from ..services.user_service import get_user
+from ..services.persona_service import prepare_user_data
 
-router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
+router = APIRouter()
 
-SCAN_STEPS = [
-    "Verifying identity...",
-    "Fetching linked bank accounts...",
-    "Pulling CIBIL credit report...",
-    "Scanning loans, FDs & investments...",
-    "Financial profile ready!",
-]
-
-
-@router.post("/scan", response_model=ScanResponse)
-async def scan(req: ScanRequest):
-    user = get_user(req.user_id)
+@router.post("/scan")
+async def scan_user(request: ScanRequest):
+    user_id = request.user_id
+    user = get_user(user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    for step in SCAN_STEPS:
-        print(f"  [SCAN] {step}")
-        await asyncio.sleep(random.uniform(0.8, 1.0))
-
-    init_financial_data(req.user_id)
-
-    print(f"\n  [SCAN] Complete for {req.user_id}\n")
-
-    return ScanResponse(status="scan_complete")
+        raise HTTPException(status_code=404, detail="User not found")
+    await asyncio.sleep(1.2)  # Simulate processing delay
+    financial_data = prepare_user_data(user_id)
+    user['financial_data'] = financial_data
+    return {"status": "scan_complete"}
