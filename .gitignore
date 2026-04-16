@@ -2,3 +2,7 @@
 .env.*
 __pycache__/
 *.pyc
+venv/
+backend/venv/
+node_modules/
+backend/temp_uploads/

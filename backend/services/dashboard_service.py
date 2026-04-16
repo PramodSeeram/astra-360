@@ -1,203 +1,195 @@
 """
-Dashboard Service Layer — Phase 2
-Reads from in-memory user_store and returns structured responses.
-All data access uses safe .get() with fallbacks.
-Centralized has_data flag drives empty-state logic.
+Dashboard Service Layer — Phase 3
+Fetches real data from MySQL using SQLAlchemy models.
+Maps DB objects to structured JSON for dashboard screens.
 """
 
 import time
-from services.user_service import user_store
+import datetime
+from sqlalchemy.orm import Session
+from models import User, Transaction, Card, Loan, Bill, get_user_by_external_id, UserFinancialSummary, UserProcessingStatus
+from services.user_state import get_user_state
 
-
-def _get_user_safe(user_id: str) -> dict | None:
-    """Safely retrieve user from store."""
-    return user_store.get(user_id)
-
-
-def _has_data(user: dict) -> bool:
-    """Centralized has_data check."""
-    return user.get("has_data", False)
-
-
-def _get_financial_data(user: dict) -> dict:
-    """Safely get financial_data with fallback to empty dict."""
-    return user.get("financial_data", {})
-
-
-def _timestamp_to_iso(ts: float | None) -> str | None:
-    """Convert unix timestamp to ISO string, or None."""
+def _timestamp_to_iso(ts):
+    """Convert unix timestamp or datetime to ISO string."""
     if ts is None:
         return None
-    try:
+    if isinstance(ts, (int, float)):
         return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
-    except (OSError, ValueError):
-        return None
-
+    return ts.strftime("%Y-%m-%dT%H:%M:%S")
 
 # ----------------------------------------------
 # HOME SUMMARY
 # ----------------------------------------------
-def get_home_data(user_id: str) -> dict | None:
-    user = _get_user_safe(user_id)
+def get_home_data(db: Session, external_id: str) -> dict | None:
+    user = get_user_by_external_id(db, external_id)
     if not user:
         return None
 
-    has_data = _has_data(user)
-    data = _get_financial_data(user)
-    kyc = user.get("kyc", {})
+    # 1. Determine State
+    state = get_user_state(db, user)
+    
+    # 2. Fetch Summary & Status
+    summary = user.financial_summary
+    status = user.processing_status
+    
+    # 3. Calculate metrics from real data
+    total_balance = summary.total_balance if summary else sum(card.balance for card in user.cards)
+    total_savings = summary.savings if summary else 0.0
+    total_investments = 0.0 # Placeholder until we have investment parsing
+    total_credit_due = sum(bill.amount for bill in user.bills if bill.status != "paid")
 
-    first_name = kyc.get("first_name", "User")
-    last_name = kyc.get("last_name", "")
+    first_name = user.name.split()[0] if user.name else "User"
+    last_name = user.name.split()[-1] if len(user.name.split()) > 1 else ""
     initials = (first_name[:1] + last_name[:1]).upper() if last_name else first_name[:2].upper()
 
-    result = {
-        "user_id": user_id,
+    return {
+        "user_id": external_id,
+        "state": state,
+        "activation_required": state != "ACTIVE",
+        "processing_status": {
+            "status": status.status if status else "idle",
+            "progress": status.progress if status else 0,
+            "stage": status.stage if status else "Waiting for data"
+        } if state != "ACTIVE" else None,
         "first_name": first_name,
         "last_name": last_name,
         "initials": initials,
-        "balance": data.get("balance", 0),
-        "savings": data.get("savings", 0),
-        "investments": data.get("investments", 0),
-        "credit_due": data.get("credit_due", 0),
-        "credit_score": data.get("credit_score", 0),
-        "insights": data.get("insights", []),
-        "has_data": has_data,
-        "source": "processed_data" if has_data else "empty_state",
-        "last_updated": _timestamp_to_iso(data.get("initialized_at")),
-        "data_sources": data.get("data_sources", []),
-        "message": None if has_data else "Upload your financial documents to get started. We'll analyze your accounts, investments, and bills to give you personalized AI insights.",
+        "balance": total_balance,
+        "savings": total_savings,
+        "investments": total_investments,
+        "credit_due": total_credit_due,
+        "credit_score": user.credit_score,
+        "insights": [
+            {"id": 1, "type": "info", "text": f"Welcome back, {first_name}! Your profile is {state.lower()}.", "time": "Now"}
+        ] if state == "ACTIVE" else [],
+        "has_data": state == "ACTIVE",
+        "data_quality_score": summary.data_quality_score if summary else 0.0,
+        "source": "mysql_db",
+        "last_updated": _timestamp_to_iso(datetime.datetime.now()),
+        "data_sources": ["MySQL DB", "Uploaded Statements"] if state == "ACTIVE" else ["MySQL DB"],
+        "message": None if state == "ACTIVE" else "Please upload your bank statement to activate insights."
     }
-
-    print(f"  [DASHBOARD] GET /home -> user={user_id}, has_data={has_data}, balance={result['balance']}")
-    return result
-
 
 # ----------------------------------------------
 # BILLS & SUBSCRIPTIONS
 # ----------------------------------------------
-def get_bills_data(user_id: str) -> dict | None:
-    user = _get_user_safe(user_id)
+def get_bills_data(db: Session, external_id: str) -> dict | None:
+    user = get_user_by_external_id(db, external_id)
     if not user:
         return None
 
-    has_data = _has_data(user)
-    data = _get_financial_data(user)
+    bills = []
+    for b in user.bills:
+        bills.append({
+            "name": b.name,
+            "amount": b.amount,
+            "due_date": b.due_date.strftime("%d %b %Y"),
+            "status": b.status.capitalize()
+        })
 
-    subscriptions = data.get("subscriptions", [])
-    bills = data.get("bills", [])
-
-    total_monthly = sum(s.get("amount", 0) for s in subscriptions) + sum(b.get("amount", 0) for b in bills)
-
-    result = {
-        "subscriptions": subscriptions,
+    return {
+        "subscriptions": [], # Simplified for now
         "utilities": bills,
-        "total_monthly": total_monthly,
-        "due_this_week": 0,
-        "has_data": has_data,
-        "source": "processed_data" if has_data else "empty_state",
-        "last_updated": _timestamp_to_iso(data.get("initialized_at")),
-        "data_sources": data.get("data_sources", []),
-        "message": None if has_data else "No bills yet. Upload your bank statements to auto-detect subscriptions and bills.",
+        "total_monthly": sum(b.amount for b in user.bills),
+        "due_this_week": sum(b.amount for b in user.bills if b.status != "paid"),
+        "has_data": True,
+        "source": "mysql_db",
+        "last_updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "data_sources": ["MySQL DB"],
     }
 
-    print(f"  [DASHBOARD] GET /bills -> user={user_id}, has_data={has_data}, subs={len(subscriptions)}, bills={len(bills)}")
-    return result
-
-
 # ----------------------------------------------
-# CARDS
+# CARDS & TRANSACTIONS
 # ----------------------------------------------
-def get_cards_data(user_id: str) -> dict | None:
-    user = _get_user_safe(user_id)
+def get_cards_data(db: Session, external_id: str) -> dict | None:
+    user = get_user_by_external_id(db, external_id)
     if not user:
         return None
 
-    has_data = _has_data(user)
-    data = _get_financial_data(user)
+    cards = []
+    for c in user.cards:
+        cards.append({
+            "id": c.id,
+            "bank": c.bank_name,
+            "type": c.card_type,
+            "number": f"•••• {c.last4_digits}",
+            "limit": f"₹{c.limit:,.0f}",
+            "used": f"₹{c.balance:,.0f}",
+            "color1": "#1A2980" if c.id % 2 == 0 else "#EB3349",
+            "color2": "#26D0CE" if c.id % 2 == 0 else "#F45C43",
+        })
 
-    cards = data.get("cards", [])
-    transactions = data.get("transactions", [])
+    txs = []
+    for t in user.transactions:
+        txs.append({
+            "name": t.description,
+            "amount": f"{'-' if t.type == 'debit' else '+'} ₹{t.amount:,.0f}",
+            "time": t.date.strftime("%d %b"),
+            "emoji": "💰" if t.type == "credit" else "📦",
+            "category": t.category
+        })
 
-    result = {
+    return {
         "cards": cards,
-        "transactions": transactions,
-        "has_data": has_data,
-        "source": "processed_data" if has_data else "empty_state",
-        "last_updated": _timestamp_to_iso(data.get("initialized_at")),
-        "data_sources": data.get("data_sources", []),
-        "message": None if has_data else "No cards available. Link your bank accounts to see your cards here.",
+        "transactions": txs,
+        "has_data": True,
+        "source": "mysql_db",
+        "last_updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-
-    print(f"  [DASHBOARD] GET /cards -> user={user_id}, has_data={has_data}, cards={len(cards)}")
-    return result
-
 
 # ----------------------------------------------
 # CALENDAR
 # ----------------------------------------------
-def get_calendar_data(user_id: str) -> dict | None:
-    user = _get_user_safe(user_id)
+def get_calendar_data(db: Session, external_id: str) -> dict | None:
+    user = get_user_by_external_id(db, external_id)
     if not user:
         return None
 
-    has_data = _has_data(user)
-    data = _get_financial_data(user)
+    events = []
+    for b in user.bills:
+        events.append({
+            "id": b.id,
+            "date": b.due_date.day,
+            "type": "bill",
+            "tag": b.name.split()[0].upper(),
+            "title": b.name,
+            "subtitle": "Due Payment",
+            "amount": f"₹{b.amount:,.0f}"
+        })
 
-    events = data.get("calendar", [])
-
-    result = {
+    return {
         "events": events,
-        "has_data": has_data,
-        "source": "processed_data" if has_data else "empty_state",
-        "last_updated": _timestamp_to_iso(data.get("initialized_at")),
-        "data_sources": data.get("data_sources", []),
-        "message": None if has_data else "No financial events yet. Your bill due dates, SIP debits, and EMIs will appear here automatically.",
+        "has_data": True,
+        "source": "mysql_db",
     }
-
-    print(f"  [DASHBOARD] GET /calendar -> user={user_id}, has_data={has_data}, events={len(events)}")
-    return result
-
 
 # ----------------------------------------------
 # PROFILE
 # ----------------------------------------------
-def get_profile_data(user_id: str) -> dict | None:
-    user = _get_user_safe(user_id)
+def get_profile_data(db: Session, external_id: str) -> dict | None:
+    user = get_user_by_external_id(db, external_id)
     if not user:
         return None
 
-    kyc = user.get("kyc", {})
-    has_data = _has_data(user)
-    data = _get_financial_data(user)
-
-    first_name = kyc.get("first_name", "User")
-    last_name = kyc.get("last_name", "")
-    pan = kyc.get("pan", "")
-    pan_masked = f"{'*' * 6}{pan[-4:]}" if len(pan) >= 4 else ""
-
+    first_name = user.name.split()[0] if user.name else "User"
+    last_name = user.name.split()[-1] if len(user.name.split()) > 1 else ""
     initials = (first_name[:1] + last_name[:1]).upper() if last_name else first_name[:2].upper()
 
-    created_at = user.get("created_at")
-    joined_str = _timestamp_to_iso(created_at)
-
-    result = {
-        "user_id": user_id,
+    return {
+        "user_id": external_id,
         "first_name": first_name,
         "last_name": last_name,
-        "full_name": f"{first_name} {last_name}".strip(),
+        "full_name": user.name,
         "initials": initials,
-        "phone": user.get("phone", ""),
-        "email": kyc.get("email", ""),
-        "pan_masked": pan_masked,
-        "pan_type": kyc.get("pan_type", ""),
-        "is_onboarded": user.get("is_onboarded", False),
-        "linked_accounts": data.get("linked_accounts", []),
-        "has_data": has_data,
-        "source": "processed_data" if has_data else "empty_state",
-        "joined_at": joined_str,
-        "data_sources": data.get("data_sources", []),
-        "message": None if has_data else "Link your bank accounts via Account Aggregator to see them here.",
+        "phone": user.phone_number,
+        "email": user.email,
+        "is_onboarded": True,
+        "linked_accounts": [
+            {"bank": "Linked MySQL", "type": "Savings", "acc_no": f"•••• {user.id}"}
+        ],
+        "has_data": True,
+        "source": "mysql_db",
+        "joined_at": _timestamp_to_iso(user.created_at),
     }
 
-    print(f"  [DASHBOARD] GET /profile -> user={user_id}, name={first_name} {last_name}, has_data={has_data}")
-    return result
