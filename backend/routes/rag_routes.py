@@ -3,9 +3,14 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from utils.file_helpers import save_upload_file_tmp, remove_tmp_file
-from rag.document_processor import process_file
-from rag.embeddings import generate_embeddings, generate_single_embedding
-from rag.vector_store import insert_documents, search_documents
+from rag.embeddings import generate_single_embedding
+from rag.vector_store import (
+    search_knowledge,
+    COLLECTION_DOCUMENTS,
+    COLLECTION_INSIGHTS,
+    COLLECTION_TRANSACTIONS,
+)
+from services.data_activation_service import extract_bank_transactions, vectorize_financial_rag_async
 
 router = APIRouter(prefix="/rag", tags=["RAG Pipeline"])
 logger = logging.getLogger(__name__)
@@ -19,7 +24,7 @@ def _error_response(message: str, status_code: int):
 
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
-    """Uploads a document, processes it, creates embeddings, and stores in Vector DB."""
+    """Uploads a bank statement and stores structured financial RAG data in Qdrant."""
     filename = (file.filename or "").strip()
     normalized_filename = filename.lower()
 
@@ -31,19 +36,25 @@ async def upload_document(file: UploadFile = File(...)):
     file_path = ""
     try:
         file_path = save_upload_file_tmp(file)
-        chunks_with_metadata = process_file(file_path, filename)
-        logger.info("Chunks created: %s", len(chunks_with_metadata))
-        logger.info("Sample chunk preview: %s", chunks_with_metadata[0]["text"][:120].replace("\n", " "))
-        
-        raw_texts = [chunk["text"] for chunk in chunks_with_metadata]
-        vectors = generate_embeddings(raw_texts)
-        logger.info("Embedding generation successful: count=%s dimension=%s", len(vectors), len(vectors[0]) if vectors else 0)
-        
-        insert_documents(chunks_with_metadata, vectors)
+        transactions, extraction_meta = extract_bank_transactions(file_path, filename)
+        logger.info(
+            "Financial extraction complete: method=%s raw=%s valid=%s",
+            extraction_meta["method"],
+            extraction_meta["raw_count"],
+            extraction_meta["valid_count"],
+        )
+
+        if not transactions:
+            return _error_response("No financial transactions could be extracted from this statement.", 400)
+
+        vector_counts = await vectorize_financial_rag_async(transactions, filename)
         
         return {
             "status": "success", 
-            "chunks_processed": len(chunks_with_metadata)
+            "transactions_processed": len(transactions),
+            "transactions_vectorized": vector_counts["transactions"],
+            "insights_vectorized": vector_counts["insights"],
+            "extraction_method": extraction_meta["method"],
         }
     except ValueError as exc:
         logger.error("RAG upload validation failed: %s", exc)
@@ -60,16 +71,25 @@ async def upload_document(file: UploadFile = File(...)):
 
 @router.post("/query")
 async def query_knowledge_base(payload: QueryRequest):
-    """Embeds user search query and returns top matching document context chunks."""
+    """Embeds a query and returns grounded financial RAG context."""
     try:
         if not payload.query or not payload.query.strip():
             return _error_response("Query must not be empty.", 400)
         query_vector = generate_single_embedding(payload.query)
-        results = search_documents(query_vector, top_k=5)
-        logger.info("Query results count: %s", len(results))
+        transactions = search_knowledge(COLLECTION_TRANSACTIONS, query_vector, top_k=5)
+        insights = search_knowledge(COLLECTION_INSIGHTS, query_vector, top_k=3)
+        documents = search_knowledge(COLLECTION_DOCUMENTS, query_vector, top_k=2)
+        logger.info(
+            "RAG query results: transactions=%s insights=%s documents=%s",
+            len(transactions),
+            len(insights),
+            len(documents),
+        )
         
         return {
-            "results": results
+            "transactions": transactions,
+            "insights": insights,
+            "documents": documents,
         }
     except ValueError as exc:
         logger.error("RAG query validation failed: %s", exc)
