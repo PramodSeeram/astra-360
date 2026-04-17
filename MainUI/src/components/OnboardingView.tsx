@@ -6,7 +6,7 @@ import AstraLogo from "./AstraLogo";
 import { api } from "@/lib/api";
 
 interface Props {
-  onComplete: (userId: string) => void;
+  onLogin: (userId: string, name: string) => void;
 }
 
 const slides = [
@@ -37,7 +37,7 @@ const scanSteps = [
 
 type Stage = "carousel" | "mobile" | "otp_verify" | "kyc" | "scanning";
 
-const OnboardingView = ({ onComplete }: Props) => {
+const OnboardingView = ({ onLogin }: Props) => {
   const [stage, setStage] = useState<Stage>("carousel");
   const [slideIdx, setSlideIdx] = useState(0);
   const [phone, setPhone] = useState("");
@@ -64,19 +64,25 @@ const OnboardingView = ({ onComplete }: Props) => {
     else setStage("mobile");
   };
 
-  const handleAgree = async () => {
+  const handleDemoLoginAttempt = async () => {
     if (phone.length < 10 || !agreed) return;
     setLoading(true);
     try {
-      const res = await api.sendOtp(phone);
-      if (res.dev_otp) {
-        setDevOtp(res.dev_otp);
+      const res = await api.demoLogin(phone);
+      if (res.status === "success") {
+        toast.success(`Welcome back, ${res.name}!`);
+        onLogin(res.user_id, res.name);
       }
-      toast.success("OTP sent successfully!");
-      setStage("otp_verify");
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Failed to send OTP";
-      toast.error(message);
+    } catch (err: any) {
+      // Revert to original behavior: send OTP if user not found
+      try {
+        const res = await api.sendOtp(phone);
+        if (res.dev_otp) setDevOtp(res.dev_otp);
+        toast.success("OTP sent successfully!");
+        setStage("otp_verify");
+      } catch (otpErr: any) {
+        toast.error(otpErr.message || "Failed to send OTP");
+      }
     } finally {
       setLoading(false);
     }
@@ -111,8 +117,6 @@ const OnboardingView = ({ onComplete }: Props) => {
     try {
       const res = await api.verifyOtp(phone, otpString);
       setUserId(res.user_id);
-      localStorage.setItem("astra_user_id", res.user_id);
-      localStorage.setItem("astra_phone", phone);
       toast.success("Phone verified!");
       setStage("kyc");
     } catch (err: unknown) {
@@ -189,12 +193,12 @@ const OnboardingView = ({ onComplete }: Props) => {
 
   useEffect(() => {
     if (scanApiDone && scanAnimDone) {
-      setTimeout(() => onComplete(userId), 600);
+      setTimeout(() => onLogin(userId, firstName), 600);
     }
-  }, [scanApiDone, scanAnimDone, userId, onComplete]);
+  }, [scanApiDone, scanAnimDone, userId, onLogin, firstName]);
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center px-6 bg-background">
+    <div className="flex min-h-screen flex-col items-center justify-center px-6 bg-background text-foreground">
       <AnimatePresence mode="wait">
         {stage === "carousel" && (
           <motion.div
@@ -310,7 +314,7 @@ const OnboardingView = ({ onComplete }: Props) => {
             </label>
 
             <button
-              onClick={handleAgree}
+              onClick={handleDemoLoginAttempt}
               disabled={phone.length < 10 || !agreed || loading}
               className="w-full rounded-2xl bg-primary px-6 py-4 font-display font-semibold text-primary-foreground text-sm transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
@@ -355,7 +359,7 @@ const OnboardingView = ({ onComplete }: Props) => {
                   value={digit}
                   onChange={(e) => handleOtpChange(i, e.target.value)}
                   onKeyDown={(e) => handleOtpKeyDown(i, e)}
-                  className="w-12 h-14 rounded-xl border border-border bg-card text-center text-lg font-bold text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/30 transition-all"
+                  className="w-12 h-14 rounded-xl border border-border bg-card text-center text-lg font-bold text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/30 transition-all border-[#BFFF07]"
                 />
               ))}
             </div>
@@ -363,7 +367,7 @@ const OnboardingView = ({ onComplete }: Props) => {
             {devOtp && (
               <button
                 onClick={handleAutoFill}
-                className="text-xs text-primary/70 mb-4 hover:text-primary transition-colors"
+                className="text-xs text-[#BFFF07] mb-4 hover:text-primary transition-colors text-left"
               >
                 🔑 Dev: Auto-fill OTP
               </button>
@@ -372,7 +376,7 @@ const OnboardingView = ({ onComplete }: Props) => {
             <button
               onClick={handleVerifyOtp}
               disabled={otp.join("").length !== 6 || loading}
-              className="w-full rounded-2xl bg-primary px-6 py-4 font-display font-semibold text-primary-foreground text-sm transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2 mb-4"
+              className="w-full rounded-2xl bg-[#BFFF07] px-6 py-4 font-display font-semibold text-black text-sm transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2 mb-4"
             >
               {loading && <Loader2 size={16} className="animate-spin" />}
               {loading ? "Verifying..." : "Verify OTP"}

@@ -8,11 +8,12 @@ import CalendarScreen from "@/components/CalendarScreen";
 import CardsScreen from "@/components/CardsScreen";
 import BillsScreen from "@/components/BillsScreen";
 import CreditScoreDetail from "@/components/CreditScoreDetail";
+import AlertsView from "@/components/AlertsView";
 import BottomNav from "@/components/BottomNav";
 import ScamAlertModal from "@/components/ScamAlertModal";
 
-type View = "onboarding" | "home" | "chat" | "profile" | "calendar" | "cards" | "bills" | "credit-score";
-type Tab = "home" | "calendar" | "chat" | "cards" | "profile";
+type View = "onboarding" | "home" | "chat" | "profile" | "calendar" | "cards" | "bills" | "credit-score" | "alerts";
+type Tab = "home" | "calendar" | "bills" | "chat" | "cards" | "profile";
 
 const Index = () => {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -26,7 +27,12 @@ const Index = () => {
   const [isNewUser, setIsNewUser] = useState(true);
 
   useEffect(() => {
-    const storedUserId = localStorage.getItem("astra_user_id");
+    // 1. Clean up old keys if present
+    localStorage.removeItem("astra_user_id");
+    localStorage.removeItem("astra_phone");
+
+    // 2. Check for new standardized keys
+    const storedUserId = localStorage.getItem("user_id");
     if (storedUserId) {
       setUserId(storedUserId);
       setLoggedIn(true);
@@ -35,12 +41,15 @@ const Index = () => {
     }
   }, []);
 
-  const handleLogin = (newUserId: string) => {
+  const handleLogin = (newUserId: string, name: string) => {
+    localStorage.setItem("user_id", newUserId);
+    localStorage.setItem("user_name", name);
+    
     setUserId(newUserId);
     setLoggedIn(true);
     setView("home");
     setActiveTab("home");
-    setIsNewUser(true);
+    setIsNewUser(false);
   };
 
   const handleAgentClick = (agent: string) => {
@@ -55,6 +64,8 @@ const Index = () => {
       setView("credit-score");
     } else if (target === "bills") {
       setView("bills");
+    } else if (target === "alerts") {
+      setView("alerts");
     }
   };
 
@@ -91,8 +102,8 @@ const Index = () => {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("astra_user_id");
-    localStorage.removeItem("astra_phone");
+    localStorage.removeItem("user_id");
+    localStorage.removeItem("user_name");
     setLoggedIn(false);
     setUserId("");
     setView("onboarding");
@@ -108,7 +119,7 @@ const Index = () => {
       <AnimatePresence mode="wait">
         {!loggedIn ? (
           <motion.div key="onboarding" exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
-            <OnboardingView onComplete={handleLogin} />
+            <OnboardingView onLogin={handleLogin} />
           </motion.div>
         ) : view === "home" ? (
           <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
@@ -133,6 +144,10 @@ const Index = () => {
         ) : view === "credit-score" ? (
           <motion.div key="credit-score" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
             <CreditScoreDetail onBack={handleCreditScoreBack} onAskImprove={handleAskImprove} />
+          </motion.div>
+        ) : view === "alerts" ? (
+          <motion.div key="alerts" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.25 }}>
+            <AlertsView onBack={() => setView("home")} />
           </motion.div>
         ) : (
           <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>

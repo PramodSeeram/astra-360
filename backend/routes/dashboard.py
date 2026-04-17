@@ -4,7 +4,9 @@ GET endpoints that return structured JSON for each dashboard screen.
 All routes validate user existence and return clean empty-state data.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+from sqlalchemy.orm import Session
+from database import get_db
 from services.dashboard_service import (
     get_home_data,
     get_bills_data,
@@ -29,45 +31,45 @@ def _user_not_found():
 
 
 @router.get("/home")
-def dashboard_home(user_id: str = Query(..., description="User ID")):
+def dashboard_home(user_id: str = Query(..., description="User ID"), db: Session = Depends(get_db)):
     uid = _validate_user_id(user_id)
-    result = get_home_data(uid)
+    result = get_home_data(db, uid)
     if result is None:
         _user_not_found()
     return result
 
 
 @router.get("/bills")
-def dashboard_bills(user_id: str = Query(..., description="User ID")):
+def dashboard_bills(user_id: str = Query(..., description="User ID"), db: Session = Depends(get_db)):
     uid = _validate_user_id(user_id)
-    result = get_bills_data(uid)
+    result = get_bills_data(db, uid)
     if result is None:
         _user_not_found()
     return result
 
 
 @router.get("/cards")
-def dashboard_cards(user_id: str = Query(..., description="User ID")):
+def dashboard_cards(user_id: str = Query(..., description="User ID"), db: Session = Depends(get_db)):
     uid = _validate_user_id(user_id)
-    result = get_cards_data(uid)
+    result = get_cards_data(db, uid)
     if result is None:
         _user_not_found()
     return result
 
 
 @router.get("/calendar")
-def dashboard_calendar(user_id: str = Query(..., description="User ID")):
+def dashboard_calendar(user_id: str = Query(..., description="User ID"), db: Session = Depends(get_db)):
     uid = _validate_user_id(user_id)
-    result = get_calendar_data(uid)
+    result = get_calendar_data(db, uid)
     if result is None:
         _user_not_found()
     return result
 
 
 @router.get("/profile")
-def dashboard_profile(user_id: str = Query(..., description="User ID")):
+def dashboard_profile(user_id: str = Query(..., description="User ID"), db: Session = Depends(get_db)):
     uid = _validate_user_id(user_id)
-    result = get_profile_data(uid)
+    result = get_profile_data(db, uid)
     if result is None:
         _user_not_found()
     return result

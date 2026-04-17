@@ -27,13 +27,8 @@ def generate_otp(phone: str) -> dict:
         "last_sent": now,
     }
 
-    my_real_phone = os.getenv("MY_REAL_PHONE")
-    if my_real_phone and phone == my_real_phone:
-        send_via_twilio(phone, otp)
-    else:
-        print(f"\n{'='*40}")
-        print(f"  [DEV OTP] {phone}: {otp}")
-        print(f"{'='*40}\n")
+    # Try sending via Twilio for all numbers if configured, else fallback to console
+    send_via_twilio(phone, otp)
 
     return {"otp": otp}
 

@@ -9,8 +9,13 @@ from rag.vector_store import search_documents
 logger = logging.getLogger(__name__)
 
 # Configure LLM Client (RunPod GPU - Ollama)
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://0ruool8gerdycr-11434.proxy.runpod.net/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "mistral:latest")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://0ruool8gerdycr-11434.proxy.runpod.net")
+if not LLM_BASE_URL.endswith("/v1"):
+    OLLAMA_BASE_URL = f"{LLM_BASE_URL}/v1"
+else:
+    OLLAMA_BASE_URL = LLM_BASE_URL
+
+LLM_MODEL = os.getenv("LLM_MODEL", "mistral")
 
 # Initialize client
 client = OpenAI(

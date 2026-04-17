@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Camera, ArrowLeft, Clock, Plus, X, MessageSquare } from "lucide-react";
+import { api } from "@/lib/api";
 
 interface Message {
   id: number;
@@ -61,6 +62,8 @@ const mockHistory = [
 const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const userName = localStorage.getItem("user_name") || "User";
+  const userId = localStorage.getItem("user_id") || "";
   const [typing, setTyping] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -110,19 +113,35 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
     return "default";
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = input.trim();
     if (!text) return;
     setInput("");
     const userMsg: Message = { id: ++idRef.current, role: "user", text };
     setMessages((prev) => [...prev, userMsg]);
     setTyping(true);
+    
     const agent = detectAgent(text);
-    const response = text.toLowerCase() === "scamtest" ? mockResponses.scamtest : mockResponses.default;
-    setTimeout(() => {
-      setMessages((prev) => [...prev, { id: ++idRef.current, role: "ai", text: response, agent }]);
+
+    try {
+      const data = await api.chat(userId, text);
+      setMessages((prev) => [...prev, { 
+        id: ++idRef.current, 
+        role: "ai", 
+        text: data.response, 
+        agent 
+      }]);
+    } catch (error) {
+      console.error("Chat Error:", error);
+      setMessages((prev) => [...prev, { 
+        id: ++idRef.current, 
+        role: "ai", 
+        text: "I'm having trouble connecting to my brain right now. Please check if the backend is running.", 
+        agent 
+      }]);
+    } finally {
       setTyping(false);
-    }, 1000 + Math.random() * 800);
+    }
   };
 
   const getAgent = (agentId?: string) => agentMap[agentId || "default"] || agentMap.default;
@@ -135,8 +154,8 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
           <ArrowLeft size={20} />
         </button>
         <div>
-          <h2 className="font-display text-sm font-semibold text-foreground">Astra 360 Chat</h2>
-          <p className="text-[10px] text-primary">Multi-Agent Active</p>
+          <h2 className="font-display text-sm font-semibold text-foreground">Welcome, {userName}</h2>
+          <p className="text-[10px] text-primary">Astra 360 Agent Active</p>
         </div>
         <button 
           onClick={() => setHistoryOpen(true)}

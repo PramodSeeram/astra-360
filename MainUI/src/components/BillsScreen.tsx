@@ -25,11 +25,23 @@ const statusStyle = {
     badgeText: "text-[#FF4D4D]",
     border: "border-[#FF4D4D]/15",
   },
-  upcoming: {
+  "upcoming": {
     badge: "Upcoming",
     badgeBg: "bg-white/5",
     badgeText: "text-gray-400",
     border: "border-white/5",
+  },
+  "Active": {
+    badge: "Active",
+    badgeBg: "bg-[#CCFF00]/10",
+    badgeText: "text-[#CCFF00]",
+    border: "border-[#CCFF00]/15",
+  },
+  "Pending": {
+    badge: "Pending",
+    badgeBg: "bg-amber-500/10",
+    badgeText: "text-amber-500",
+    border: "border-amber-500/15",
   },
 };
 
@@ -55,7 +67,7 @@ const BillsScreen = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const userId = localStorage.getItem("astra_user_id");
+    const userId = localStorage.getItem("user_id");
     if (!userId) {
       setLoading(false);
       return;
@@ -252,7 +264,7 @@ const BillsScreen = () => {
 
           <div className="space-y-2">
             {utilities.map((bill, i) => {
-              const style = statusStyle[(bill.status as keyof typeof statusStyle) || "upcoming"];
+              const style = (statusStyle[bill.status as keyof typeof statusStyle] || statusStyle.upcoming);
               return (
                 <motion.div
                   key={i}

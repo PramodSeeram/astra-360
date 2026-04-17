@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { ShieldAlert, Bell, CheckCircle2, Info, AlertTriangle } from "lucide-react";
+import { ShieldAlert, Bell, CheckCircle2, Info, AlertTriangle, ArrowLeft } from "lucide-react";
 
 interface Alert {
   id: number;
@@ -26,12 +26,17 @@ const typeConfig = {
   info: { icon: Info, color: "text-muted-foreground", bg: "bg-muted/30", border: "border-border/30" },
 };
 
-const AlertsView = () => (
+const AlertsView = ({ onBack }: { onBack: () => void }) => (
   <div className="min-h-screen pb-24 pt-6 px-4 max-w-lg mx-auto">
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-6">
-      <h1 className="font-display text-2xl font-bold text-foreground">Alerts</h1>
-      <p className="text-muted-foreground text-sm">Real-time updates from your AI agents</p>
-    </motion.div>
+    <div className="flex items-center gap-3 mb-6">
+      <button onClick={onBack} className="text-muted-foreground hover:text-foreground transition-colors mr-2">
+        <ArrowLeft size={20} />
+      </button>
+      <div>
+        <h1 className="font-display text-2xl font-bold text-foreground">Alerts</h1>
+        <p className="text-muted-foreground text-sm">Real-time updates from your AI agents</p>
+      </div>
+    </div>
 
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="flex gap-2 mb-5 overflow-x-auto pb-1">
       {["All", "Critical", "Warnings", "Info"].map((f, i) => (

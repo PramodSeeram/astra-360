@@ -10,7 +10,7 @@ const CardsScreen = () => {
   const [showNumber, setShowNumber] = useState(false);
 
   useEffect(() => {
-    const userId = localStorage.getItem("astra_user_id");
+    const userId = localStorage.getItem("user_id");
     if (!userId) {
       setLoading(false);
       return;

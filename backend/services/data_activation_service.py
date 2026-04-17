@@ -12,7 +12,7 @@ from agents.wealth_agent import client, LLM_MODEL
 
 logger = logging.getLogger(__name__)
 
-MIN_THRESHOLD = 10
+MIN_THRESHOLD = 5
 
 def _normalize_description(desc: str) -> str:
     return re.sub(r'[^a-zA-Z0-9]', '', desc).lower()
@@ -65,20 +65,21 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
     # Here we'll use a strong LLM prompt as requested.
     
     prompt = f"""
-    Extract all financial transactions from the following bank statement text.
-    Text:
+    You are a professional financial data extractor. I will provide you with bank statement text.
+    Your task is to extract EVERY SINGLE transaction listed in the text. Do not summarize. 
+    Do not skip rows.
+    
+    TEXT:
     \"\"\"{text[:5000]}\"\"\"
     
-    Return ONLY a JSON list of objects:
-    {{
-        "date": "YYYY-MM-DD",
-        "amount": float,
-        "type": "credit" | "debit",
-        "description": "Cleaned description",
-        "category": "Suggested category (e.g. Food, Salary, EMI, Rent, Shopping, Utilities)"
-    }}
-    
-    If no transactions are found, return [].
+    INSTRUCTIONS:
+    - Return a JSON list of ALL transactions.
+    - Each object must have: "date" (YYYY-MM-DD), "amount" (float), "type" ("credit" or "debit"), "description", and "category".
+    - If a row has a '+' it is a "credit", if it has a '-' it is a "debit".
+    - Clean up descriptions (e.g., remove transaction IDs if they clutter the name).
+    - If you find no transactions, return [].
+
+    OUTPUT ONLY THE JSON LIST:
     """
 
     try:
@@ -88,6 +89,8 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
             temperature=0.0
         )
         content = completion.choices[0].message.content
+        logger.info(f"DEBUG LLM CONTENT: {content}")
+        print(f"DEBUG LLM CONTENT: {content}")
         start = content.find('[')
         end = content.rfind(']') + 1
         raw_txs = json.loads(content[start:end]) if start != -1 else []
@@ -115,8 +118,11 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
             amt = float(tx.get('amount', 0))
             dt_str = tx.get('date')
             desc = tx.get('description', '')
-            if amt <= 0 or not dt_str or not desc:
+            if abs(amt) == 0 or not dt_str or not desc:
                 continue
+            
+            # Use absolute amount for storage as 'type' handles the sign
+            amt = abs(amt)
                 
             # 2. Generate Hash & Check Deduplication
             tx_h = _generate_tx_hash(dt_str, amt, desc, i)

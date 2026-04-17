@@ -44,3 +44,11 @@ class ScanResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+class DemoLoginRequest(BaseModel):
+    phone: str
+
+
+class DemoLoginResponse(BaseModel):
+    user_id: str
+    name: str
+    status: str

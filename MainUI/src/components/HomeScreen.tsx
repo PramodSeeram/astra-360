@@ -38,7 +38,7 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    const userId = localStorage.getItem("astra_user_id");
+    const userId = localStorage.getItem("user_id");
     if (!userId) {
       setLoading(false);
       return;
@@ -73,18 +73,39 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: 
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
-    if (!selectedFile) return;
+    const userId = localStorage.getItem("user_id");
+    if (!selectedFile || !userId) return;
 
     try {
       setUploading(true);
-      setUploadMessage(null);
-      const response = await api.uploadDocument(selectedFile);
-      setUploadMessage(`Uploaded successfully. ${response.chunks_processed} chunk(s) processed.`);
+      setUploadMessage("Starting analysis...");
+      await api.activateData(userId, selectedFile);
+      
+      // Start Polling
+      const poll = setInterval(async () => {
+        try {
+          const status = await api.getActivationStatus(userId);
+          setUploadMessage(`Analyzing: ${status.stage} (${status.progress}%)`);
+          
+          if (status.status === "completed") {
+            clearInterval(poll);
+            setUploadMessage("Activation complete! Reloading...");
+            setTimeout(() => window.location.reload(), 1500);
+          } else if (status.status === "failed") {
+            clearInterval(poll);
+            setUploadMessage(`Error: ${status.error}`);
+            setUploading(false);
+          }
+        } catch (e) {
+          console.error("Polling error:", e);
+        }
+      }, 2000);
+
     } catch (error) {
       console.error("[HomeScreen] Upload error:", error);
       setUploadMessage(error instanceof Error ? error.message : "Upload failed");
-    } finally {
       setUploading(false);
+    } finally {
       event.target.value = "";
     }
   };

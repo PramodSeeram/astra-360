@@ -30,6 +30,7 @@ def _validate_embedding_dimensions(embeddings: List[List[float]]):
 
 def init_qdrant_collection():
     """Checks if collection exists, if not, creates it."""
+    # Use the newer collections list API
     collections = client.get_collections().collections
     exists = any(col.name == COLLECTION_NAME for col in collections)
     
@@ -76,14 +77,16 @@ def search_documents(query_embedding: List[float], top_k: int = 5) -> List[Dict]
             f"Invalid query embedding dimension. Expected {VECTOR_SIZE}, got {len(query_embedding)}."
         )
     
-    search_result = client.search(
+    # Use query_points instead of the removed search method
+    search_result = client.query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=query_embedding,
+        query=query_embedding,
         limit=top_k
     )
     
     results = []
-    for hit in search_result:
+    # query_points returns a ScoredPoint list in the .points attribute
+    for hit in search_result.points:
         results.append({
             "text": hit.payload.get("text"),
             "metadata": {

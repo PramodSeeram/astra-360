@@ -187,6 +187,9 @@ export const api = {
   verifyOtp: (phone: string, otp: string) =>
     request<VerifyOtpResponse>("/api/auth/verify-otp", { phone, otp }),
 
+  demoLogin: (phone: string) =>
+    request<{ user_id: string; name: string; status: string }>("/api/auth/demo-login", { phone }),
+
   submitKyc: (data: {
     user_id: string;
     first_name: string;
@@ -216,6 +219,26 @@ export const api = {
     return data as RagUploadResponse;
   },
 
+  activateData: async (userId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("user_id", userId);
+    formData.append("file", file);
+
+    const res = await fetch(`${API_BASE}/data/upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || data.detail || "Activation failed");
+    }
+    return data;
+  },
+
+  getActivationStatus: (userId: string) =>
+    get<{ status: string; progress: number; stage: string; error?: string }>(`/api/data/status?user_id=${encodeURIComponent(userId)}`),
+
   // Dashboard APIs
   getHomeSummary: (userId: string) =>
     get<HomeSummary>(`/api/dashboard/home?user_id=${encodeURIComponent(userId)}`),
@@ -231,4 +254,8 @@ export const api = {
 
   getProfile: (userId: string) =>
     get<ProfileData>(`/api/dashboard/profile?user_id=${encodeURIComponent(userId)}`),
+
+  // Agent Chat
+  chat: (userId: string, message: string) =>
+    request<{ response: string; sources: string[] }>("/chat", { user_id: userId, message }),
 };
