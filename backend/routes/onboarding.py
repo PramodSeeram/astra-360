@@ -2,8 +2,9 @@ import asyncio
 import random
 from fastapi import APIRouter, HTTPException
 from app_schemas.schemas import ScanRequest, ScanResponse
-from models import get_user_by_external_id
+from models import Card, get_user_by_external_id
 from database import get_db
+from services.dashboard_service import build_mock_cibil
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
@@ -28,7 +29,33 @@ async def scan(req: ScanRequest, db: Session = Depends(get_db)):
         print(f"  [SCAN] {step}")
         await asyncio.sleep(random.uniform(0.8, 1.0))
 
-    # init_financial_data(req.user_id) # Skip in-memory initialization
+    # Generate a deterministic mock CIBIL so the dashboard can show a
+    # realistic score immediately after KYC finishes.
+    cibil = build_mock_cibil(user)
+    if cibil:
+        user.credit_score = cibil["score"]
+    elif not user.credit_score:
+        user.credit_score = 731
+
+    existing_cards = db.query(Card).filter(Card.user_id == user.id).count()
+    if existing_cards == 0:
+        seeded_cards = [
+            ("Axis Bank", "ACE", "1024", 50000.0),
+            ("HDFC Bank", "Millennia", "6621", 100000.0),
+            ("ICICI Bank", "Coral", "4308", 75000.0),
+        ]
+        for bank_name, card_type, last4_digits, limit_value in seeded_cards:
+            db.add(
+                Card(
+                    user_id=user.id,
+                    bank_name=bank_name,
+                    card_type=card_type,
+                    last4_digits=last4_digits,
+                    limit=limit_value,
+                    balance=0.0,
+                )
+            )
+    db.commit()
 
     print(f"\n  [SCAN] Complete for {req.user_id}\n")
 

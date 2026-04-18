@@ -14,6 +14,8 @@ import asyncio
 import logging
 import datetime
 import hashlib
+import random
+from collections import Counter, defaultdict
 import pandas as pd
 import httpx
 from typing import List, Dict, Tuple, Optional
@@ -22,14 +24,36 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import (
     User, Transaction, Bill, Loan, UserFinancialSummary,
+    Subscription, Card, CalendarEvent,
     UserProcessingStatus, get_user_by_external_id
 )
 from rag.document_processor import parse_document
-from rag.embeddings import generate_embeddings, generate_embeddings_async
-from rag.vector_store import insert_transactions, insert_insight
-from agents.wealth_agent import call_llm, LLM_MODEL, LLM_URL
+from rag.embeddings import generate_embeddings
+from rag.vector_store import (
+    COLLECTION_INSIGHTS,
+    COLLECTION_TRANSACTIONS,
+    upsert_knowledge_points,
+)
+from services.llm_service import call_llm, LLM_MODEL, LLM_URL
+from services.financial_engine import (
+    _EMI_IN_DESC,
+    _RENT_IN_DESC,
+    canonical_year_month,
+    compute_snapshot_from_transactions,
+)
+from services.financial_cleanup import delete_user_financial_data
 
 logger = logging.getLogger(__name__)
+
+
+def _other_to_bills_from_narration(description: Optional[str], standardized: str) -> str:
+    """If the LLM yields Other, map obvious rent/EMI narrations to Bills."""
+    if standardized != "Other":
+        return standardized
+    text = str(description or "")
+    if _RENT_IN_DESC.search(text) or _EMI_IN_DESC.search(text):
+        return "Bills"
+    return standardized
 
 # ─────────────────────────────────────────────
 # CONSTANTS
@@ -215,7 +239,11 @@ async def categorize_transaction_async(
     if not category:
         category = await ai_categorize(cleaned or str(description or ""), semaphore=semaphore)
         _store_category(description, cleaned, category)
-    return _standardize_category(category)
+    final = _standardize_category(category)
+    resolved = _other_to_bills_from_narration(description, final)
+    if resolved != final:
+        _store_category(description, cleaned, resolved)
+    return resolved
 
 
 def categorize_transaction(description: str) -> str:
@@ -229,7 +257,11 @@ def categorize_transaction(description: str) -> str:
         except RuntimeError:
             category = asyncio.run(ai_categorize(ai_input))
         _store_category(description, cleaned, category)
-    return _standardize_category(category)
+    final = _standardize_category(category)
+    resolved = _other_to_bills_from_narration(description, final)
+    if resolved != final:
+        _store_category(description, cleaned, resolved)
+    return resolved
 
 
 # ─────────────────────────────────────────────
@@ -319,6 +351,7 @@ COLUMN_ALIASES = {
     "credit":      ["credit", "cr", "credit amount", "deposit", "deposit amt", "deposits"],
     "type":        ["type", "tx type", "transaction type", "dr/cr"],
     "description": ["description", "narration", "particulars", "details", "remarks", "transaction details", "transaction remark"],
+    "balance":     ["balance", "closing balance", "running balance", "available balance", "bal", "closing bal"],
 }
 
 def _find_column(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
@@ -343,13 +376,14 @@ def _extract_from_tables(tables: List[pd.DataFrame]) -> List[Dict]:
         credit_col = _find_column(df, COLUMN_ALIASES["credit"])
         type_col   = _find_column(df, COLUMN_ALIASES["type"])
         desc_col   = _find_column(df, COLUMN_ALIASES["description"])
+        bal_col    = _find_column(df, COLUMN_ALIASES["balance"])
 
         if not date_col and not amt_col and not debit_col:
             logger.debug("[Stage1] Table has no recognizable financial columns — skipping")
             continue
 
         for _, row in df.iterrows():
-            tx = _table_row_to_tx(row, date_col, amt_col, debit_col, credit_col, type_col, desc_col)
+            tx = _table_row_to_tx(row, date_col, amt_col, debit_col, credit_col, type_col, desc_col, bal_col)
             if tx:
                 results.append(tx)
 
@@ -357,7 +391,7 @@ def _extract_from_tables(tables: List[pd.DataFrame]) -> List[Dict]:
     return results
 
 
-def _table_row_to_tx(row, date_col, amt_col, debit_col, credit_col, type_col, desc_col) -> Optional[Dict]:
+def _table_row_to_tx(row, date_col, amt_col, debit_col, credit_col, type_col, desc_col, bal_col=None) -> Optional[Dict]:
     """Convert a single table row into a transaction dict."""
     # Date
     date_str = None
@@ -411,6 +445,8 @@ def _table_row_to_tx(row, date_col, amt_col, debit_col, credit_col, type_col, de
     if desc_col and pd.notna(row.get(desc_col)):
         description = str(row[desc_col]).strip()
 
+    tx_type = _force_type_from_description(description, tx_type)
+
     # Field count
     fields_present = sum([date_str is not None, amount is not None, tx_type is not None, bool(description)])
     if fields_present < MIN_VALID_FIELDS:
@@ -421,12 +457,17 @@ def _table_row_to_tx(row, date_col, amt_col, debit_col, credit_col, type_col, de
     if not date_str:
         return None
 
+    balance: Optional[float] = None
+    if bal_col and pd.notna(row.get(bal_col)):
+        balance = _clean_amount(str(row[bal_col]))
+
     return {
         "date": date_str,
         "amount": amount,
         "type": tx_type or "debit",
         "description": description or "Bank Transaction",
         "category": None,  # Will be filled in Stage 3
+        "balance": balance,
     }
 
 
@@ -534,6 +575,7 @@ DEBIT_KEYWORDS  = ["dr", "debit", "withdrawal", "paid", "purchase", "payment", "
                    "upi/", "atm", "emi", "loan", "bill", "recharge", "subscription", "neft/out", "petrol", "cred_pay"]
 CREDIT_KEYWORDS = ["cr", "credit", "deposit", "received", "salary", "refund", "cashback", "transfer in",
                    "int.pd", "interest", "reversal", "neft/in", "imps/in"]
+SALARY_DESCRIPTION_HINTS = ("salary", "payroll", "cms/salary")
 
 BANK_PATTERN_MAP = {
     "sbi":     [(PATTERN_SBI, "sbi_multi_col"), (PATTERN_SBI_CONDENSED, "sbi_condensed")],
@@ -554,6 +596,14 @@ def _infer_type_from_context(line: str) -> str:
     if any(kw in line_lower for kw in DEBIT_KEYWORDS):
         return "debit"
     return "debit"
+
+
+def _force_type_from_description(description: str, inferred_type: Optional[str]) -> Optional[str]:
+    """Deterministic override for semantically obvious credits/debits."""
+    desc = (description or "").lower()
+    if any(hint in desc for hint in SALARY_DESCRIPTION_HINTS):
+        return "credit"
+    return inferred_type
 
 
 def _row_from_match(m: re.Match, line: str) -> Optional[Dict]:
@@ -605,6 +655,8 @@ def _row_from_match(m: re.Match, line: str) -> Optional[Dict]:
             # Infer type from description keywords (matches verified SBI test)
             tx_type = _infer_type_from_context(description)
 
+    tx_type = _force_type_from_description(description, tx_type)
+
     # Skip if no amount (balance-only rows, headers, footers)
     if amount is None or amount <= 0:
         return None
@@ -627,6 +679,7 @@ def _row_from_match(m: re.Match, line: str) -> Optional[Dict]:
         "type":        tx_type or "debit",
         "description": description or "Bank Transaction",
         "category":    None,
+        "balance":     bal_val,
     }
 
 
@@ -787,6 +840,14 @@ def _normalize_tx(tx: Dict) -> Optional[Dict]:
         if tx_type not in ("credit", "debit"):
             tx_type = "debit"
 
+        bal_raw = tx.get("balance")
+        balance: Optional[float] = None
+        if bal_raw is not None and str(bal_raw).strip() not in ("", "nan", "None"):
+            try:
+                balance = float(str(bal_raw).replace(",", "").replace("₹", "").replace("Rs.", "").strip())
+            except (ValueError, TypeError):
+                balance = None
+
         return {
             "date": dt,
             "date_str": dt.strftime("%Y-%m-%d"),
@@ -794,9 +855,31 @@ def _normalize_tx(tx: Dict) -> Optional[Dict]:
             "type": tx_type,
             "description": desc or "Bank Transaction",
             "category": _standardize_category(tx.get("category") or "Other"),
+            "balance": balance,
         }
     except Exception:
         return None
+
+
+def _dedupe_raw_transactions(transactions: List[Dict]) -> List[Dict]:
+    """Deduplicate parsed rows by (date, rounded amount, normalized description)."""
+    seen: set = set()
+    deduped: List[Dict] = []
+    for tx in transactions:
+        date_val = tx.get("date")
+        if isinstance(date_val, datetime.datetime):
+            date_key = date_val.strftime("%Y-%m-%d")
+        else:
+            date_key = str(date_val or "")
+        amount_key = round(float(tx.get("amount") or 0.0), 2)
+        desc_key = _normalize(tx.get("description", ""))[:40]
+        type_key = (tx.get("type") or "").lower()
+        key = (date_key, amount_key, desc_key, type_key)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(tx)
+    return deduped
 
 
 async def extract_bank_transactions_async(file_path: str, filename: str) -> Tuple[List[Dict], Dict]:
@@ -807,8 +890,11 @@ async def extract_bank_transactions_async(file_path: str, filename: str) -> Tupl
     method = doc.get("method", "unknown")
 
     stage1_txs = _extract_from_tables(tables)
-    stage2_txs = _extract_from_text(text) if len(stage1_txs) == 0 else []
-    transactions = stage1_txs + stage2_txs
+    stage2_txs = _extract_from_text(text)
+    transactions = _dedupe_raw_transactions(stage1_txs + stage2_txs)
+    logger.info(
+        f"[Extract] stage1={len(stage1_txs)} stage2={len(stage2_txs)} merged={len(transactions)}"
+    )
     fallback_triggered = False
 
     if not transactions:
@@ -843,8 +929,11 @@ def extract_bank_transactions(file_path: str, filename: str) -> Tuple[List[Dict]
     method = doc.get("method", "unknown")
 
     stage1_txs = _extract_from_tables(tables)
-    stage2_txs = _extract_from_text(text) if len(stage1_txs) == 0 else []
-    transactions = stage1_txs + stage2_txs
+    stage2_txs = _extract_from_text(text)
+    transactions = _dedupe_raw_transactions(stage1_txs + stage2_txs)
+    logger.info(
+        f"[Extract] stage1={len(stage1_txs)} stage2={len(stage2_txs)} merged={len(transactions)}"
+    )
     fallback_triggered = False
 
     if not transactions:
@@ -906,7 +995,9 @@ def build_transaction_payloads(transactions: List[Dict], filename: str, user_id:
             "type": tx.get("type", "debit"),
             "text": semantic_text,
             "semantic_text": semantic_text,
+            "source": f"tx::{filename}",
             "source_file": filename,
+            "chunk_index": index,
             "tx_hash": tx_hash,
         }
         if user_id is not None:
@@ -959,59 +1050,120 @@ def build_financial_insights(transactions: List[Dict], user_id: Optional[int] = 
     return enriched
 
 
+def vectorize_financial_rag(
+    transactions: List[Dict],
+    filename: str,
+    user_id: Optional[int] = None,
+) -> Dict[str, int]:
+    """Embed user-scoped transactions and insights into Qdrant.
+
+    Returns accurate ``{transactions, insights}`` insert counts. Realtime
+    chat insights are served from the DB snapshot (see
+    ``services.user_context_service``) so a Qdrant failure here never
+    breaks the chat path — it only reduces semantic recall.
+    """
+
+    tx_payloads = build_transaction_payloads(transactions, filename, user_id=user_id)
+    tx_inserted = 0
+    insight_inserted = 0
+
+    if tx_payloads:
+        try:
+            tx_embeddings = generate_embeddings([payload["text"] for payload in tx_payloads])
+            if tx_embeddings:
+                tx_inserted = upsert_knowledge_points(
+                    tx_payloads,
+                    tx_embeddings,
+                    collection_name=COLLECTION_TRANSACTIONS,
+                )
+        except Exception as exc:
+            logger.warning("Transaction vectorization skipped: %s", exc)
+
+    try:
+        insight_rows = build_financial_insights(transactions, user_id=user_id)
+    except Exception as exc:
+        logger.warning("Insight synthesis failed: %s", exc)
+        insight_rows = []
+
+    if insight_rows:
+        insight_chunks: List[Dict] = []
+        insight_texts: List[str] = []
+        for index, (insight_text, metadata) in enumerate(insight_rows):
+            if not insight_text:
+                continue
+            insight_texts.append(insight_text)
+            insight_chunks.append(
+                {
+                    "source": f"insight::{filename}",
+                    "category": "finance",
+                    "chunk_index": index,
+                    "text": insight_text,
+                    **metadata,
+                }
+            )
+        if insight_chunks:
+            try:
+                embeddings = generate_embeddings(insight_texts)
+                if embeddings:
+                    insight_inserted = upsert_knowledge_points(
+                        insight_chunks,
+                        embeddings,
+                        collection_name=COLLECTION_INSIGHTS,
+                    )
+            except Exception as exc:
+                logger.warning("Insight vectorization skipped: %s", exc)
+
+    return {"transactions": tx_inserted, "insights": insight_inserted}
+
+
 async def vectorize_financial_rag_async(
     transactions: List[Dict],
     filename: str,
     user_id: Optional[int] = None,
 ) -> Dict[str, int]:
-    """Embed semantic transactions and derived insights, then upsert into Qdrant."""
-    tx_payloads = build_transaction_payloads(transactions, filename, user_id=user_id)
-    if not tx_payloads:
-        return {"transactions": 0, "insights": 0}
-
-    tx_embeddings = await generate_embeddings_async([payload["text"] for payload in tx_payloads])
-    insert_transactions(tx_payloads, tx_embeddings)
-
-    insight_count = 0
-    for insight_text, metadata in build_financial_insights(transactions, user_id=user_id):
-        embedding = (await generate_embeddings_async([insight_text]))[0]
-        insert_insight(insight_text, metadata, embedding)
-        insight_count += 1
-
-    return {"transactions": len(tx_payloads), "insights": insight_count}
-
-
-def vectorize_financial_rag(transactions: List[Dict], filename: str, user_id: Optional[int] = None) -> Dict[str, int]:
-    """Synchronous wrapper for background activation jobs."""
-    try:
-        import asyncio
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        import threading
-        result = []
-
-        def run_in_thread():
-            result.append(asyncio.run(vectorize_financial_rag_async(transactions, filename, user_id=user_id)))
-
-        thread = threading.Thread(target=run_in_thread)
-        thread.start()
-        thread.join()
-        return result[0]
-
-    import asyncio
-    return asyncio.run(vectorize_financial_rag_async(transactions, filename, user_id=user_id))
+    """Async shim that runs the sync path off the event loop."""
+    return await asyncio.to_thread(
+        vectorize_financial_rag, transactions, filename, user_id
+    )
 
 
 # ─────────────────────────────────────────────
 # DB SAVE
 # ─────────────────────────────────────────────
+# Merchant buckets for realistic demo card attribution. Each list maps to a
+# position in the ordered card pool (card_1, card_2, card_3...).
+MERCHANT_CARD_BUCKETS: Tuple[Tuple[str, ...], ...] = (
+    ("amazon",),
+    ("swiggy", "zomato"),
+    ("netflix", "spotify"),
+)
+
+
+def _resolve_card_id(
+    description: str, card_ids: List[int], user_id: int
+) -> Optional[int]:
+    """Pick a card for a debit based on merchant rules, else deterministic fallback."""
+    if not card_ids:
+        return None
+    desc = (description or "").lower()
+    for index, keywords in enumerate(MERCHANT_CARD_BUCKETS):
+        if index >= len(card_ids):
+            break
+        if any(keyword in desc for keyword in keywords):
+            return card_ids[index]
+    seed_key = f"{user_id}|{clean_description(description)}"
+    rng = random.Random(hashlib.md5(seed_key.encode()).hexdigest())
+    return rng.choice(card_ids)
+
+
 def _save_transactions(db: Session, user_id: int, transactions: List[Dict]) -> Tuple[int, int]:
     """Save deduplicated transactions to DB. Returns (new_saved, valid_extracted)."""
     saved = 0
     valid_extracted = 0
+
+    user_cards = db.query(Card).filter(Card.user_id == user_id).order_by(Card.id.asc()).all()
+    card_ids = [c.id for c in user_cards]
+
     for i, tx in enumerate(transactions):
         norm = _normalize_tx(tx)
         if not norm:
@@ -1024,6 +1176,10 @@ def _save_transactions(db: Session, user_id: int, transactions: List[Dict]) -> T
         ).first():
             continue  # Duplicate
 
+        assigned_card_id: Optional[int] = None
+        if norm["type"] == "debit":
+            assigned_card_id = _resolve_card_id(norm["description"], card_ids, user_id)
+
         new_tx = Transaction(
             user_id=user_id,
             amount=norm["amount"],
@@ -1032,119 +1188,379 @@ def _save_transactions(db: Session, user_id: int, transactions: List[Dict]) -> T
             description=norm["description"],
             date=norm["date"],
             tx_hash=tx_h,
+            statement_balance=norm.get("balance"),
+            card_id=assigned_card_id,
         )
         db.add(new_tx)
         saved += 1
 
-        # Detect Bills
-        if (
-            norm["category"] in ("Utilities", "Bills")
-            and is_valid_bill(norm["description"])
-        ):
-            normalized_name = _normalize_bill_name(norm["description"])
-            existing_bill = db.query(Bill).filter(
-                Bill.user_id == user_id,
-                Bill.name == normalized_name,
-            ).first()
-            if not existing_bill:
-                db.add(Bill(
-                    user_id=user_id,
-                    name=normalized_name,
-                    amount=norm["amount"],
-                    due_date=norm["date"] + datetime.timedelta(days=30),
-                    status="paid"
-                ))
-
-        # Detect Loans
-        loan_desc = norm["description"].lower()
-        if (norm["category"] == "Bills" and any(term in loan_desc for term in ("emi", "loan"))) or "emi" in loan_desc:
-            db.add(Loan(
-                user_id=user_id,
-                loan_type="Detected Loan",
-                total_amount=norm["amount"] * 12,
-                remaining_amount=norm["amount"] * 6,
-                emi=norm["amount"],
-                interest_rate=12.0,
-                status="active"
-            ))
-
     db.commit()
+    # Bills, subscriptions, and loans are rebuilt from recurrence analysis in
+    # _refresh_detected_commitments so we don't generate one-shot artifacts here.
     return saved, valid_extracted
+
+
+def _backfill_card_assignments(db: Session, user_id: int) -> None:
+    """Assign card_id by merchant rules (deterministic fallback) for any debit lacking one."""
+    cards = db.query(Card).filter(Card.user_id == user_id).order_by(Card.id.asc()).all()
+    if not cards:
+        return
+    unassigned = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == user_id,
+            Transaction.type == "debit",
+            Transaction.card_id.is_(None),
+        )
+        .order_by(Transaction.date.asc(), Transaction.id.asc())
+        .all()
+    )
+    if not unassigned:
+        return
+    card_ids = [c.id for c in cards]
+    for tx in unassigned:
+        tx.card_id = _resolve_card_id(tx.description or "", card_ids, user_id)
+    db.commit()
+
+
+# Words that add noise across bank narrations (rails, geography, generic labels) — not merchant brands.
+_RECURRENCE_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "from",
+        "with",
+        "to",
+        "of",
+        "on",
+        "at",
+        "by",
+        "in",
+        "upi",
+        "inr",
+        "dr",
+        "cr",
+        "txn",
+        "ref",
+        "id",
+        "no",
+        "dt",
+        "val",
+        "com",
+        "co",
+        "net",
+        "org",
+        "www",
+        "pay",
+        "payment",
+        "paid",
+        "india",
+        "mumbai",
+        "delhi",
+        "bangalore",
+        "bengaluru",
+        "chennai",
+        "hyderabad",
+        "pune",
+        "kolkata",
+        "debit",
+        "credit",
+        "transfer",
+        "neft",
+        "imps",
+        "rtgs",
+        "nach",
+        "subscription",
+        "subscriptions",
+        "billing",
+        "monthly",
+        "annual",
+        "yearly",
+        "auto",
+        "standing",
+        "instruction",
+        "mandate",
+    }
+)
+
+# Payment-type tokens (not merchant names): keep full token set when present so
+# "house rent" does not collapse to "house" via the single-token shortcut.
+_RECURRENCE_FIN_ANCHOR = frozenset(
+    {"rent", "lease", "emi", "loan", "electricity", "water", "gas", "utility", "utilities"}
+)
+
+_COMMITMENT_HINT_SUB = re.compile(
+    r"\b(subscription|streaming|ott|renewal|membership)\b",
+    re.IGNORECASE,
+)
+_COMMITMENT_HINT_BILL = re.compile(
+    r"\b("
+    r"emi|nach|ecs|mortgage|"
+    r"rent|lease|landlord|tenant|housing|"
+    r"electricity|water|gas|utility|utilities|power"
+    r")\b",
+    re.IGNORECASE,
+)
+_LOAN_WORD = re.compile(r"\bloan\b", re.IGNORECASE)
+
+
+def _recurrence_group_key(description: str) -> str:
+    """Cluster similar narrations without merchant-specific lists: normalize, drop noise, sort tokens."""
+    base = clean_description(description)
+    if not base:
+        return ""
+    tokens = [t for t in base.split() if len(t) >= 3 and t not in _RECURRENCE_STOPWORDS]
+    if not tokens:
+        tokens = [t for t in base.split() if len(t) >= 2]
+    if not tokens:
+        return base[:160].strip()
+
+    if frozenset(tokens) & _RECURRENCE_FIN_ANCHOR:
+        tokens.sort()
+        return " ".join(tokens)
+
+    long_tokens = [t for t in tokens if len(t) >= 5]
+    if len(tokens) >= 2 and len(long_tokens) == 1:
+        return long_tokens[0]
+
+    tokens.sort()
+    return " ".join(tokens)
+
+
+def _mode_category(categories: List[str]) -> str:
+    if not categories:
+        return "Other"
+    std = [_standardize_category(c) for c in categories]
+    return Counter(std).most_common(1)[0][0]
+
+
+def _financial_commitment_hint(description: str) -> bool:
+    text = description or ""
+    if _COMMITMENT_HINT_SUB.search(text):
+        return True
+    if _COMMITMENT_HINT_BILL.search(text):
+        return True
+    if _LOAN_WORD.search(text):
+        return True
+    return False
+
+
+def _commitment_kind_from_category_and_text(mode_category: str, raw_description: str) -> Optional[str]:
+    """Classify using standardized category + generic narration cues from the statement only."""
+    std = _standardize_category(mode_category)
+    text = raw_description or ""
+
+    if _COMMITMENT_HINT_SUB.search(text):
+        return "subscription"
+    if std == "Entertainment":
+        return "subscription"
+    if std in ("Utilities", "Bills"):
+        return "bill"
+    if std in ("Food", "Transport", "Shopping"):
+        return None
+    if std in ("Transfers", "Other"):
+        return "bill" if _financial_commitment_hint(text) else None
+    return None
+
+
+def _month_tuple(value: datetime.datetime) -> Tuple[int, int]:
+    return (value.year, value.month)
+
+
+def _window_months(anchor: Tuple[int, int], count: int = 6) -> set:
+    """Return the `count` most recent (year, month) tuples ending at anchor."""
+    year, month = anchor
+    months = set()
+    for _ in range(count):
+        months.add((year, month))
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    return months
+
+
+def _refresh_detected_commitments(db: Session, user: User) -> None:
+    """Rebuild Bill/Subscription rows from transaction history.
+
+    Rules:
+      - Group debits by (recurrence_group_key, year, month). Keys are derived
+        from cleaned narration (stopwords, sorted tokens) so similar labels
+        from the same merchant merge without a merchant whitelist.
+      - Representative amount per bucket = max(abs(amount)) to avoid
+        double-counting split or partial payments.
+      - Recurring: the group must appear in >=3 distinct calendar months
+        within the rolling last 6 months (anchored at the canonical month =
+        max(transaction date)).
+      - Subscription vs bill: standardized transaction category + generic
+        narration hints (EMI, rent, subscription, electricity, …) from the
+        statement — not hardcoded merchant names.
+      - Due / next-billing dates are anchored to the latest debit in-window
+        so calendar and bills month filters match the statement month.
+      - Emit one Bill OR one Subscription per qualifying group. Calendar
+        reads bills, subs, and explicit events directly.
+    """
+    db.query(Subscription).filter(Subscription.user_id == user.id).delete()
+    db.query(Bill).filter(Bill.user_id == user.id).delete()
+    db.commit()
+
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == user.id, Transaction.type == "debit")
+        .order_by(Transaction.date.asc(), Transaction.id.asc())
+        .all()
+    )
+    if not transactions:
+        return
+
+    canonical = canonical_year_month(transactions)
+    if canonical is None:
+        today = datetime.datetime.utcnow()
+        canonical = (today.year, today.month)
+    window = _window_months(canonical, count=6)
+
+    buckets: Dict[Tuple[str, int, int], float] = {}
+    latest_in_bucket: Dict[Tuple[str, int, int], Transaction] = {}
+    categories_by_group: Dict[str, List[str]] = defaultdict(list)
+
+    for tx in transactions:
+        if not tx.date:
+            continue
+        group_key = _recurrence_group_key(tx.description or "")
+        if not group_key:
+            continue
+        ym = _month_tuple(tx.date)
+        if ym in window:
+            categories_by_group[group_key].append(tx.category or "Other")
+        month_key = ym
+        bucket_key = (group_key, *month_key)
+        amount = abs(float(tx.amount or 0.0))
+        if amount > buckets.get(bucket_key, 0.0):
+            buckets[bucket_key] = amount
+        current_latest = latest_in_bucket.get(bucket_key)
+        if current_latest is None or tx.date > current_latest.date:
+            latest_in_bucket[bucket_key] = tx
+
+    months_in_window_by_group: Dict[str, set] = {}
+    for (group_key, year, month) in buckets.keys():
+        if (year, month) not in window:
+            continue
+        months_in_window_by_group.setdefault(group_key, set()).add((year, month))
+
+    today = datetime.datetime.utcnow()
+    bills_created = 0
+    subs_created = 0
+    for group_key, months_seen in months_in_window_by_group.items():
+        if len(months_seen) < 3:
+            continue
+        mode_cat = _mode_category(categories_by_group.get(group_key, []))
+
+        candidate_buckets = [
+            (k, v) for k, v in buckets.items() if k[0] == group_key and (k[1], k[2]) in window
+        ]
+        if not candidate_buckets:
+            continue
+        latest_bucket_key = max(candidate_buckets, key=lambda item: (item[0][1], item[0][2]))[0]
+        amount = round(buckets[latest_bucket_key], 2)
+        latest_tx = latest_in_bucket[latest_bucket_key]
+        title = (latest_tx.description or group_key or "Payment").strip()[:255]
+
+        commitment_type = _commitment_kind_from_category_and_text(mode_cat, latest_tx.description or "")
+        if not commitment_type:
+            continue
+
+        # Anchor to last debit in-window so dashboard/bills/calendar month views
+        # align with the statement (avoid +5d / +30d slipping into next month).
+        anchor = latest_tx.date
+
+        if commitment_type == "subscription":
+            db.add(
+                Subscription(
+                    user_id=user.id,
+                    name=title,
+                    amount=amount,
+                    billing_cycle="monthly",
+                    status="active",
+                    next_billing_date=anchor,
+                )
+            )
+            subs_created += 1
+        else:
+            status = "paid" if anchor.date() < today.date() else "pending"
+            db.add(
+                Bill(
+                    user_id=user.id,
+                    name=title,
+                    amount=amount,
+                    due_date=anchor,
+                    status=status,
+                )
+            )
+            bills_created += 1
+    db.commit()
+    logger.info(
+        "[Commitments] user_id=%s groups_in_window=%s bills=%s subscriptions=%s",
+        user.id,
+        len(months_in_window_by_group),
+        bills_created,
+        subs_created,
+    )
 
 
 # ─────────────────────────────────────────────
 # SUMMARY COMPUTATION
 # ─────────────────────────────────────────────
 def _build_summary(db: Session, user, raw_txs: List[Dict]) -> None:
-    """Recompute and save UserFinancialSummary."""
-    credits = [tx["amount"] for tx in raw_txs if tx.get("type") == "credit"]
-    debits  = [tx["amount"] for tx in raw_txs if tx.get("type") == "debit"]
+    """Recompute and save UserFinancialSummary using the canonical engine.
 
-    def _desc_has(tx: Dict, terms: Tuple[str, ...]) -> bool:
-        desc = str(tx.get("description", "") or "").lower()
-        return any(term in desc for term in terms)
+    raw_txs is accepted for backwards compatibility but ignored — we always
+    read the authoritative transaction set from the database so dashboard,
+    chat, and insights share the same numbers.
+    """
+    del raw_txs  # computed from DB to stay consistent across surfaces
 
-    monthly_income = sum(
-        tx["amount"] for tx in raw_txs
-        if tx.get("type") == "credit"
-        and (tx.get("category") == "Salary" or _desc_has(tx, ("salary", "payroll", "employer")))
+    all_txs = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == user.id)
+        .order_by(Transaction.date.asc(), Transaction.id.asc())
+        .all()
     )
-    monthly_spend   = sum(debits)
-    total_balance   = sum(credits) - sum(debits)
-    emi_total       = sum(
-        tx["amount"] for tx in raw_txs
-        if tx.get("category") == "EMI / Loans" or _desc_has(tx, ("emi", "loan"))
-    )
-    savings         = max(0.0, total_balance * 0.2)
+    snapshot = compute_snapshot_from_transactions(all_txs)
 
-    # Category distribution
     cat_dist: Dict[str, float] = {}
-    for tx in raw_txs:
-        cat = _standardize_category(tx.get("category", "Other"))
-        cat_dist[cat] = cat_dist.get(cat, 0.0) + tx.get("amount", 0.0)
+    for tx in all_txs:
+        if (tx.type or "").lower() != "debit":
+            continue
+        category = _standardize_category(tx.category or "Other")
+        cat_dist[category] = cat_dist.get(category, 0.0) + float(tx.amount or 0.0)
 
-    user.monthly_income = monthly_income
+    emi_total = sum(
+        float(tx.amount or 0.0)
+        for tx in all_txs
+        if (tx.category or "") == "EMI / Loans"
+        or any(keyword in (tx.description or "").lower() for keyword in ("emi", "loan"))
+    )
+
+    user.monthly_income = snapshot.salary
 
     summary = db.query(UserFinancialSummary).filter_by(user_id=user.id).first()
     if not summary:
         summary = UserFinancialSummary(user_id=user.id)
         db.add(summary)
 
-    summary.total_balance        = total_balance
-    summary.monthly_income       = monthly_income
-    summary.monthly_spend        = monthly_spend
-    summary.emi_total            = emi_total
-    summary.savings              = savings
-    summary.income_detected      = monthly_income
+    summary.total_balance         = snapshot.total_balance
+    summary.monthly_income        = snapshot.salary
+    summary.monthly_spend         = snapshot.expenses
+    summary.emi_total             = emi_total
+    summary.savings               = snapshot.savings
+    summary.income_detected       = snapshot.salary
     summary.category_distribution = json.dumps(cat_dist)
-    summary.last_upload_date     = datetime.datetime.utcnow()
-    summary.last_updated         = datetime.datetime.utcnow()
+    summary.last_upload_date      = datetime.datetime.utcnow()
+    summary.last_updated          = datetime.datetime.utcnow()
     db.commit()
 
-    # Derived Insight Generation for Vector Store
-    try:
-        month_str = datetime.datetime.utcnow().strftime("%B %Y")
-        top_cat = max(cat_dist.items(), key=lambda x: x[1])[0] if cat_dist else "None"
-        top_cat_amt = cat_dist.get(top_cat, 0.0)
-        
-        insight_text = (
-            f"In {month_str}, user spent ₹{monthly_spend:,.2f}. "
-            f"Top category: {top_cat} (₹{top_cat_amt:,.2f}). "
-            f"Monthly income detected: ₹{monthly_income:,.2f}. "
-            f"Total balance across detected accounts is ₹{total_balance:,.2f}."
-        )
-        
-        logger.info(f"Generated insight: {insight_text}")
-        
-        # Embed and store insight
-        embedding = generate_embeddings([insight_text])[0]
-        insert_insight(
-            insight_text=insight_text,
-            metadata={"user_id": str(user.id), "month": month_str, "type": "monthly_summary"},
-            embedding=embedding
-        )
-    except Exception as e:
-        logger.error(f"Failed to embed insights: {e}")
+    _refresh_detected_commitments(db, user)
 
 
 
@@ -1204,11 +1620,16 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
     logger.info(f"[Pipeline] Stage 1 result: {len(stage1_txs)} transactions")
 
     # ── Stage 2: Regex Heuristics ────────────
+    # Always run text-based extraction so partial table matches don't silently
+    # drop rows like Swiggy/Amazon that live in narration-only lines.
     _update(45, "Stage 2: Regex heuristic extraction...")
-    stage2_txs = _extract_from_text(text) if len(stage1_txs) == 0 else []
+    stage2_txs = _extract_from_text(text)
     logger.info(f"[Pipeline] Stage 2 result: {len(stage2_txs)} transactions")
 
-    combined = stage1_txs + stage2_txs
+    combined = _dedupe_raw_transactions(stage1_txs + stage2_txs)
+    logger.info(
+        f"[Pipeline] Merged stage1+stage2 after dedupe: {len(combined)} transactions"
+    )
     fallback_triggered = False
 
     # ── Stage 4: LLM Fallback Extraction ─────
@@ -1225,8 +1646,35 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
 
     _update(75, "Deduplicating and saving...")
 
+    # Delete-after-validated-parse: only wipe prior financial data once we
+    # know extraction produced something. A bad/empty file never wipes the
+    # user's account. _save_transactions stays idempotent via tx_hash.
+    if combined:
+        delete_user_financial_data(db, user.id)
+
+    # Seed demo cards BEFORE saving so each debit gets a card_id assigned.
+    existing_cards = db.query(Card).filter(Card.user_id == user.id).count()
+    if existing_cards == 0:
+        for bank_name, card_type, last4, limit_value in (
+            ("HDFC Bank", "Platinum", "1842", 120000.0),
+            ("ICICI Bank", "Amazon Pay", "7721", 80000.0),
+            ("SBI Card", "SimplyCLICK", "4510", 60000.0),
+        ):
+            db.add(
+                Card(
+                    user_id=user.id,
+                    bank_name=bank_name,
+                    card_type=card_type,
+                    last4_digits=last4,
+                    limit=limit_value,
+                    balance=0.0,
+                )
+            )
+        db.commit()
+
     # ── Save to DB ───────────────────────────
     new_saved, valid_extracted = _save_transactions(db, user.id, combined)
+    _backfill_card_assignments(db, user.id)
     total_raw   = len(combined)
     confidence  = valid_extracted / total_raw if total_raw > 0 else 0.0
 
@@ -1237,25 +1685,6 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
 
     _update(90, "Computing financial summary and insights...")
 
-    _build_summary(db, user, combined)
-    
-    _update(95, "Vectorizing transactions for knowledge base...")
-    try:
-        normalized_for_rag = []
-        for tx in combined:
-            norm = _normalize_tx(tx)
-            if norm:
-                normalized_for_rag.append(norm)
-        vector_counts = vectorize_financial_rag(normalized_for_rag, filename, user_id=user.id)
-        logger.info(
-            "Financial RAG vectorization complete: transactions=%s insights=%s",
-            vector_counts["transactions"],
-            vector_counts["insights"],
-        )
-            
-    except Exception as e:
-        logger.error(f"Failed to vectorize transactions: {e}")
-
     # ── Final Outcome ─────────────────────────
     if valid_extracted == 0:
         status.status        = "failed"
@@ -1264,13 +1693,35 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
         logger.warning(f"[Pipeline] No transactions extracted from '{filename}'")
         return
 
-    # Build summary from all DB transactions (not just this upload batch)
-    all_db_txs = db.query(Transaction).filter(Transaction.user_id == user.id).all()
-    all_txs_dict = [
-        {"amount": t.amount, "type": t.type, "category": t.category, "description": t.description}
-        for t in all_db_txs
-    ]
-    _build_summary(db, user, all_txs_dict)
+    # Single summary rebuild from the authoritative DB transactions (not the
+    # raw in-memory batch) so bills/subs and snapshot numbers always agree.
+    _build_summary(db, user, [])
+
+    # Vectorize the user's transactions and derived insights so the chat
+    # agents can retrieve user-scoped semantic context. Failures here must
+    # not fail activation — the chat path still works from the DB snapshot.
+    try:
+        rag_counts = vectorize_financial_rag(combined, filename, user_id=user.id)
+        logger.info(
+            "[Pipeline] Vectorized RAG — transactions=%s insights=%s",
+            rag_counts.get("transactions", 0),
+            rag_counts.get("insights", 0),
+        )
+    except Exception as exc:
+        logger.warning("[Pipeline] RAG vectorization failed (non-fatal): %s", exc)
+
+    tx_count = db.query(Transaction).filter(Transaction.user_id == user.id).count()
+    bill_count = db.query(Bill).filter(Bill.user_id == user.id).count()
+    sub_count = db.query(Subscription).filter(Subscription.user_id == user.id).count()
+    event_count = db.query(CalendarEvent).filter(CalendarEvent.user_id == user.id).count()
+    logger.info(
+        "[Pipeline] Summary rebuilt — transactions=%s bills=%s subscriptions=%s events=%s",
+        tx_count, bill_count, sub_count, event_count,
+    )
+
+    if not user.credit_score:
+        user.credit_score = 742
+        db.commit()
 
     # Confidence warning tag
     confidence_tag = ""

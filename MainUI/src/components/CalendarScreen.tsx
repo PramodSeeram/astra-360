@@ -23,6 +23,12 @@ const typeColors = {
     dot: "bg-[#00FF66]",
     border: "border-[#00FF66]/15",
   },
+  income: {
+    bg: "bg-[#00FF66]/12",
+    text: "text-[#00FF66]",
+    dot: "bg-[#00FF66]",
+    border: "border-[#00FF66]/25",
+  },
 };
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -48,6 +54,12 @@ const MONTH_NAMES = [
   "November",
   "December",
 ];
+
+function isCreditEvent(event: CalendarEvent): boolean {
+  const tag = (event.tag || "").toUpperCase();
+  const amount = (event.amount || "").trim();
+  return event.type === "income" || tag === "SAL" || amount.startsWith("+");
+}
 
 /* ─── Component ─── */
 const CalendarScreen = () => {
@@ -322,7 +334,9 @@ const CalendarScreen = () => {
               </motion.div>
             ) : (
               selectedEvents.map((event, i) => {
-                const colors = typeColors[event.type] || typeColors.bill;
+                const colors = isCreditEvent(event)
+                  ? typeColors.income
+                  : (typeColors[event.type as keyof typeof typeColors] || typeColors.bill);
                 return (
                   <motion.div
                     key={event.id}
@@ -354,7 +368,11 @@ const CalendarScreen = () => {
                         </p>
                       </div>
                       {event.amount && (
-                        <p className="font-display text-lg font-extrabold text-white shrink-0">
+                        <p
+                          className={`font-display text-lg font-extrabold shrink-0 ${
+                            isCreditEvent(event) ? "text-[#00FF66]" : "text-white"
+                          }`}
+                        >
                           {event.amount}
                         </p>
                       )}

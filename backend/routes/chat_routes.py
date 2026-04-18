@@ -1,13 +1,14 @@
 import logging
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
-from agents.wealth_agent import get_chat_response, detect_agent, detect_intent
 from database import get_db
 from sqlalchemy.orm import Session
 from fastapi import Depends, APIRouter, HTTPException
 from models import get_user_by_external_id, ChatMessage, ChatThread
-from services.context_builder import build_user_context
+from services.chat_service import build_chat_response
+from services.chat_policy import ACTIVATION_REQUIRED_RESPONSE
 from services.user_state import get_user_state
+from services.agent_router import route_query
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["Agent Chat"])
@@ -73,41 +74,52 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(thread)
 
-        # 1.5 Check User State for Activation Prompt
+        # 1.5 Detect route ONCE. Downstream services must never re-route.
+        route = route_query(request.message)
+
+        # 1.6 Check User State for Activation Prompt — only block generic
+        # requests; finance questions are answered from the latest DB snapshot
+        # even in PARTIAL state.
         state = get_user_state(db, user)
-        if state == "PARTIAL" and any(kw in request.message.lower() for kw in ["how", "help", "show", "get", "start"]):
-             return ChatResponse(
-                type="activation_required",
-                response="To provide personalized insights, I need to analyze your financial data. Please upload your bank statement.",
-                ui_action="open_file_upload",
-                actions=["upload_now", "how_it_works"]
+        if (
+            state == "PARTIAL"
+            and route.agent != "finance_agent"
+            and any(kw in request.message.lower() for kw in ["help", "show", "get", "start", "upload"])
+        ):
+            activation = ACTIVATION_REQUIRED_RESPONSE
+            return ChatResponse(
+                type=activation["type"],
+                response=activation["response"],
+                ui_action=activation.get("ui_action"),
+                actions=activation.get("actions", []),
+                sources=activation.get("sources", []),
+                confidence=activation.get("confidence"),
+                data={
+                    **activation.get("data", {}),
+                    "thread_id": thread.id,
+                    "thread_title": thread.title,
+                    "route": {
+                        "agent": route.agent,
+                        "category": route.category,
+                        "reason": "activation_required",
+                        "confidence": route.confidence,
+                    },
+                },
             )
 
-        # 2. Detect Intent
-        routed_agent = detect_agent(request.message)
-        intent_data = {
-            "agent": routed_agent,
-            "intent": detect_intent(request.message),
-        }
-        if isinstance(intent_data, dict):
-            intent = intent_data.get("agent", "wealth")
-            confidence = intent_data.get("confidence", 1.0)
-        else:
-            intent = intent_data
-            confidence = 1.0
-        logger.info(f"Detected agent: {intent} ({confidence})")
+        logger.info(
+            "chat.route agent=%s category=%s reason=%s confidence=%.2f",
+            route.agent, route.category, route.reason, route.confidence,
+        )
 
-        # 3. Build User Context
-        user_context = build_user_context(db, user)
-
-        # 4. Save User Message
+        # 2. Save User Message
         user_msg = ChatMessage(thread_id=thread.id, role="user", content=request.message)
         db.add(user_msg)
         if not thread.title or thread.title == "Main Chat":
             thread.title = _build_thread_title(request.message)
         db.commit()
 
-        # 5. Build compact conversation memory after saving the latest user answer.
+        # 3. Build compact conversation memory after saving the latest user answer.
         recent_messages = (
             db.query(ChatMessage)
             .filter(ChatMessage.thread_id == thread.id)
@@ -120,31 +132,41 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             for msg in reversed(recent_messages)
         ]
 
-        # 6. Get AI Response with context and memory.
-        result = get_chat_response(
-            request.message,
-            user_context=user_context,
-            intent_data=intent_data,
+        # 4. Dispatch to chat service with the precomputed route.
+        result = build_chat_response(
+            db=db,
+            user=user,
+            message=request.message,
             memory=memory,
+            route=route,
         )
 
-        # 7. Save Assistant Message
+        # 5. Save Assistant Message
         assistant_msg = ChatMessage(thread_id=thread.id, role="assistant", content=result["response"])
         db.add(assistant_msg)
         db.commit()
 
+        merged_data = {
+            **(result.get("data") or {}),
+            "thread_id": thread.id,
+            "thread_title": thread.title,
+            "route": {
+                "agent": route.agent,
+                "category": route.category,
+                "reason": result.get("reason") or route.reason,
+                "confidence": route.confidence,
+                "keywords_matched": list(route.keywords_matched),
+            },
+        }
+
         return ChatResponse(
-            type=result.get("type", "general"),
+            type=result.get("type", route.agent),
             response=result["response"],
             ui_action=result.get("ui_action"),
             actions=result.get("actions", []),
-            sources=result["sources"],
-            confidence=confidence,
-            data={
-                **(user_context if intent == "wealth" else {}),
-                "thread_id": thread.id,
-                "thread_title": thread.title,
-            } if intent == "wealth" else {"thread_id": thread.id, "thread_title": thread.title}
+            sources=result.get("sources", []),
+            confidence=result.get("confidence"),
+            data=merged_data,
         )
 
     except ValueError as e:

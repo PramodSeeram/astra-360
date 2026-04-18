@@ -6,13 +6,38 @@ PARTIAL state now surfaces real data with an informational banner.
 
 import calendar
 import json
+import re
 import time
 import datetime
 from collections import defaultdict
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
-from models import Bill, Card, CreditAccount, Loan, Subscription, Transaction, User, UserFinancialSummary, UserProcessingStatus, get_user_by_external_id
+from models import Bill, CalendarEvent, Card, CreditAccount, Subscription, Transaction, User, UserFinancialSummary, UserProcessingStatus, get_user_by_external_id
+from services.financial_engine import _EMI_IN_DESC, _RENT_IN_DESC, canonical_year_month
 from services.user_state import get_user_state
+
+
+def build_mock_cibil(user: User) -> dict | None:
+    """Deterministic mock CIBIL profile — only populated once KYC is complete.
+
+    Numbers stay stable across reloads by seeding off the user's primary key.
+    """
+    if not getattr(user, "kyc_completed", 0) and not getattr(user, "pan", None):
+        return None
+
+    seed = (user.id or 0) * 7919
+    score = 730 + (seed % 51)  # 730-780
+    loans_count = 1 + (seed % 3)  # 1-3
+    cards_count = 3 + ((seed >> 3) % 3)  # 3-5
+    utilization = 30 + ((seed >> 5) % 11)  # 30-40%
+
+    return {
+        "score": score,
+        "loans": loans_count,
+        "cards": cards_count,
+        "utilization": utilization,
+        "last_updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
 
 
 def _timestamp_to_iso(ts):
@@ -54,6 +79,8 @@ def _status_for_due_date(due_date: datetime.datetime, status: str) -> str:
     if (status or "").lower() == "paid":
         return "Paid"
     days_until_due = (due_date.date() - datetime.datetime.utcnow().date()).days
+    if days_until_due < 0:
+        return "overdue"
     if days_until_due <= 7:
         return "due-soon"
     return "upcoming"
@@ -61,6 +88,28 @@ def _status_for_due_date(due_date: datetime.datetime, status: str) -> str:
 
 def _month_label(year: int, month: int) -> str:
     return f"{calendar.month_name[month]} {year}"
+
+
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_TRAILING_REF_RE = re.compile(r"(?:\s+txn[0-9a-z]+|\s+[0-9]{5,})$", re.IGNORECASE)
+
+
+def _normalize_calendar_title(value: str) -> str:
+    text = (value or "").strip().lower()
+    text = _TRAILING_REF_RE.sub("", text)
+    return _NON_ALNUM_RE.sub("", text)
+
+
+def _amount_to_float(value: str | float | int | None) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    cleaned = re.sub(r"[^0-9.\-]", "", str(value))
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
 
 
 def _normalize_bill_description(description: str) -> str:
@@ -142,46 +191,6 @@ def _average_monthly_bill_amount(
     return round(sum(values) / len(values), 2)
 
 
-def _build_salary_reminders(transactions: list[Transaction], year: int, month: int) -> list[dict]:
-    salary_txs = [
-        tx for tx in transactions
-        if (tx.type or "").lower() == "credit"
-        and (
-            (tx.category or "").lower() == "salary"
-            or "salary" in (tx.description or "").lower()
-        )
-    ]
-    if not salary_txs:
-        return []
-
-    latest_salary = max(salary_txs, key=lambda tx: tx.date)
-    return [{
-        "id": 300000 + latest_salary.id,
-        "date": latest_salary.date.day,
-        "type": "investment",
-        "tag": "SALARY",
-        "title": "Salary Credit Expected",
-        "subtitle": latest_salary.description or "Monthly salary credit",
-        "amount": f"+ ₹{latest_salary.amount:,.0f}",
-    }]
-
-
-def _build_emi_reminders(loans: list[Loan]) -> list[dict]:
-    reminders = []
-    for index, loan in enumerate(loans):
-        due_day = min(5 + index * 5, 28)
-        reminders.append({
-            "id": 200000 + loan.id,
-            "date": due_day,
-            "type": "bill",
-            "tag": "EMI",
-            "title": f"{loan.loan_type} EMI",
-            "subtitle": "Monthly EMI reminder",
-            "amount": f"₹{loan.emi:,.0f}",
-        })
-    return reminders
-
-
 def get_transactions_by_month(db: Session, user_id: int, year: int, month: int) -> list[Transaction]:
     return db.query(Transaction).filter(
         Transaction.user_id == user_id,
@@ -193,6 +202,101 @@ def get_transactions_by_month(db: Session, user_id: int, year: int, month: int) 
 # ──────────────────────────────────────────────
 # HOME SUMMARY
 # ──────────────────────────────────────────────
+def _build_home_insights(
+    state: str,
+    monthly_income: float,
+    monthly_spend: float,
+    total_savings: float,
+    total_credit_due: float,
+    category_dist: dict,
+) -> list[dict]:
+    """Produce home insights. Tries the LLM for narrative phrasing with strict
+    numeric context; always falls back to deterministic rules so the UI never
+    renders empty insights during a demo."""
+    if state not in ("ACTIVE", "PARTIAL"):
+        return []
+
+    top_category = None
+    top_amount = 0.0
+    if category_dist:
+        top_category = max(category_dist, key=category_dist.get)
+        top_amount = float(category_dist[top_category])
+
+    savings_rate = (total_savings / monthly_income * 100.0) if monthly_income > 0 else 0.0
+
+    fallback: list[dict] = []
+    if state == "PARTIAL":
+        fallback.append({
+            "id": 1,
+            "type": "warning",
+            "text": "Your data is being processed. Showing latest snapshot.",
+            "time": "Now",
+        })
+    if monthly_spend > 0:
+        fallback.append({
+            "id": 2,
+            "type": "spend",
+            "text": f"You spent {_format_inr(monthly_spend)} this month.",
+            "time": "This month",
+        })
+    if monthly_income > 0:
+        rate_label = f"{savings_rate:.0f}%"
+        fallback.append({
+            "id": 3,
+            "type": "info",
+            "text": f"You are saving {rate_label} of your income this month.",
+            "time": "This month",
+        })
+    if top_category and top_amount > 0:
+        fallback.append({
+            "id": 4,
+            "type": "info",
+            "text": f"Top spend category is {top_category} at {_format_inr(top_amount)}.",
+            "time": "This month",
+        })
+    if total_credit_due > 0:
+        fallback.append({
+            "id": 5,
+            "type": "alert",
+            "text": f"Bills due soon: {_format_inr(total_credit_due)}.",
+            "time": "Upcoming",
+        })
+
+    # Try to get a 3-bullet LLM narrative using ONLY these numbers. The LLM
+    # may only rephrase — not recompute. On any failure, keep the rules.
+    if monthly_income > 0 or monthly_spend > 0:
+        try:
+            from services.llm_service import call_llm
+
+            prompt = (
+                "Generate exactly 3 short financial insights using ONLY the "
+                "numbers below. Do not change or invent any numbers. One "
+                "sentence per insight. Output plain text bullets starting "
+                "with '- '. No JSON, no headings.\n"
+                f"Salary: {monthly_income:.0f}\n"
+                f"Expenses: {monthly_spend:.0f}\n"
+                f"Savings: {total_savings:.0f}\n"
+                f"Savings rate: {savings_rate:.0f}%\n"
+                f"Top category: {top_category or 'none'} ({top_amount:.0f})\n"
+                f"Bills due: {total_credit_due:.0f}"
+            )
+            raw = (call_llm(prompt, temperature=0.0) or "").strip()
+            bullets = [
+                line.lstrip("-• ").strip()
+                for line in raw.splitlines()
+                if line.strip().startswith(("-", "•"))
+            ]
+            if len(bullets) >= 1:
+                return [
+                    {"id": idx + 1, "type": "info", "text": bullet, "time": "This month"}
+                    for idx, bullet in enumerate(bullets[:3])
+                ]
+        except Exception:
+            pass
+
+    return fallback[:4]
+
+
 def get_home_data(db: Session, external_id: str) -> dict | None:
     user = get_user_by_external_id(db, external_id)
     if not user:
@@ -202,10 +306,13 @@ def get_home_data(db: Session, external_id: str) -> dict | None:
     summary = user.financial_summary
     status  = user.processing_status
 
-    # Balance: use summary if available, else sum cards
-    total_balance      = summary.total_balance if summary else sum(c.balance for c in user.cards)
+    # Balance comes from the summary (built via compute_snapshot_from_transactions,
+    # which applies the statement-balance + running-balance guards). Never sum
+    # card balances — that produces a meaningless number.
+    total_balance      = summary.total_balance if summary else 0.0
     total_savings      = summary.savings if summary else 0.0
     monthly_spend      = summary.monthly_spend if summary else 0.0
+    monthly_income     = summary.monthly_income if summary else 0.0
     total_investments  = 0.0
     total_credit_due   = sum(b.amount for b in user.bills if b.status != "paid")
     category_dist      = json.loads(summary.category_distribution) if (summary and summary.category_distribution) else {}
@@ -219,21 +326,16 @@ def get_home_data(db: Session, external_id: str) -> dict | None:
     is_active = state == "ACTIVE"
     is_partial = state == "PARTIAL"
 
-    # Insights — shown for ACTIVE and PARTIAL
-    insights = []
-    if has_data:
-        tx_count = db.query(Transaction).filter(Transaction.user_id == user.id).count()
-        if is_active:
-            insights.append({"id": 1, "type": "info",    "text": f"Welcome back, {first_name}! Your financial profile is fully activated.", "time": "Now"})
-        if is_partial:
-            insights.append({"id": 1, "type": "warning", "text": f"Partial data loaded ({tx_count} transactions). Upload more for complete insights.", "time": "Now"})
-        if monthly_spend > 0:
-            insights.append({"id": 2, "type": "spend",   "text": f"Monthly spend so far: {_format_inr(monthly_spend)}", "time": "This month"})
-        if total_credit_due > 0:
-            insights.append({"id": 3, "type": "alert",   "text": f"Bills due: {_format_inr(total_credit_due)}", "time": "Upcoming"})
-        if category_dist:
-            top_cat = max(category_dist, key=category_dist.get)
-            insights.append({"id": 4, "type": "info",    "text": f"Top spending category: {top_cat} ({_format_inr(category_dist[top_cat])})", "time": "All time"})
+    insights = _build_home_insights(
+        state=state,
+        monthly_income=monthly_income,
+        monthly_spend=monthly_spend,
+        total_savings=total_savings,
+        total_credit_due=total_credit_due,
+        category_dist=category_dist,
+    )
+
+    cibil = build_mock_cibil(user)
 
     return {
         "user_id":           external_id,
@@ -252,7 +354,8 @@ def get_home_data(db: Session, external_id: str) -> dict | None:
         "monthly_spend":     monthly_spend,
         "investments":       total_investments,
         "credit_due":        total_credit_due,
-        "credit_score":      user.credit_score,
+        "credit_score":      cibil["score"] if cibil else user.credit_score,
+        "cibil":             cibil,
         "category_distribution": category_dist,
         "insights":          insights,
         "has_data":          has_data,
@@ -262,8 +365,8 @@ def get_home_data(db: Session, external_id: str) -> dict | None:
         "data_sources":      ["MySQL DB", "Uploaded Statements"] if has_data else ["MySQL DB"],
         "message": (
             None if is_active
-            else "Upload more data for better insights." if is_partial
-            else "Please upload your bank statement to activate insights."
+            else "Your data is being processed. Showing latest snapshot." if is_partial
+            else "Please upload your bank statement to generate insights."
         ),
     }
 
@@ -400,8 +503,20 @@ def get_cards_data(db: Session, external_id: str) -> dict | None:
         ("#DA4453", "#89216B"),
     ]
 
+    # Aggregate spend per card from canonical-month debits so each card
+    # reflects current-month usage, consistent with the snapshot headline.
+    canonical = canonical_year_month(user.transactions)
+    used_by_card: dict[int, float] = defaultdict(float)
+    for tx in user.transactions:
+        if (tx.type or "").lower() != "debit" or tx.card_id is None or not tx.date:
+            continue
+        if canonical is not None and (tx.date.year, tx.date.month) != canonical:
+            continue
+        used_by_card[tx.card_id] += abs(float(tx.amount or 0.0))
+
     cards = []
     for i, c in enumerate(user.cards):
+        used_amount = round(used_by_card.get(c.id, float(c.balance or 0.0)), 2)
         cards.append(
             {
                 "id": c.id,
@@ -409,7 +524,7 @@ def get_cards_data(db: Session, external_id: str) -> dict | None:
                 "type": c.card_type,
                 "number": f"•••• {c.last4_digits}",
                 "limit": f"₹{c.limit:,.0f}",
-                "used": f"₹{c.balance:,.0f}",
+                "used": f"₹{used_amount:,.0f}",
                 "color1": CARD_GRADIENTS[i % len(CARD_GRADIENTS)][0],
                 "color2": CARD_GRADIENTS[i % len(CARD_GRADIENTS)][1],
             }
@@ -486,8 +601,137 @@ def get_calendar_data(db: Session, external_id: str, year: int, month: int) -> d
         for b in user.bills
         if b.due_date.year == year and b.due_date.month == month
     ]
-    events.extend(_build_emi_reminders([loan for loan in user.loans if (loan.status or "").lower() == "active"]))
-    events.extend(_build_salary_reminders(txs, year, month))
+
+    for sub in user.subscriptions:
+        next_billing = sub.next_billing_date
+        if not next_billing or next_billing.year != year or next_billing.month != month:
+            continue
+        events.append(
+            {
+                "id":       400000 + sub.id,
+                "date":     next_billing.day,
+                "type":     "subscription",
+                "tag":      "SUB",
+                "title":    sub.name,
+                "subtitle": f"{sub.billing_cycle or 'monthly'} renewal".title(),
+                "amount":   f"₹{sub.amount:,.0f}",
+            }
+        )
+
+    stored_events = (
+        db.query(CalendarEvent)
+        .filter(
+            CalendarEvent.user_id == user.id,
+            extract("year", CalendarEvent.event_date) == year,
+            extract("month", CalendarEvent.event_date) == month,
+        )
+        .all()
+    )
+    known_titles = {event["title"].lower() for event in events}
+    for stored in stored_events:
+        title = (stored.title or "").strip()
+        if not title or title.lower() in known_titles:
+            continue
+        events.append(
+            {
+                "id":       500000 + stored.id,
+                "date":     stored.event_date.day,
+                "type":     stored.event_type or "event",
+                "tag":      (stored.event_type or "EVT").upper()[:6],
+                "title":    title,
+                "subtitle": f"{(stored.event_type or 'event').title()} reminder",
+                "amount":   f"₹{stored.amount:,.0f}",
+            }
+        )
+
+    semantic_signatures: set[tuple[int, str, float]] = set()
+    for event in events:
+        title = str(event.get("title", ""))
+        tag = str(event.get("tag", "")).upper()
+        amount = round(abs(_amount_to_float(event.get("amount"))), 2)
+        day = int(event.get("date", 0) or 0)
+        if day <= 0 or amount <= 0:
+            continue
+        lowered = title.lower()
+        if "rent" in lowered or tag == "RENT":
+            semantic_signatures.add((day, "rent", amount))
+        if "emi" in lowered or "nach" in lowered or tag == "EMI":
+            semantic_signatures.add((day, "emi", amount))
+
+    # Rent / EMI from raw debits (narration), so the calendar fills even when
+    # commitment-derived Bill rows are missing or delayed.
+    known_titles = {event["title"].lower() for event in events}
+    for tx in txs:
+        if (tx.type or "").lower() != "debit" or not tx.date:
+            continue
+        raw = (tx.description or "").strip()
+        if not raw:
+            continue
+        tag = None
+        if _RENT_IN_DESC.search(raw):
+            tag = "RENT"
+        elif _EMI_IN_DESC.search(raw):
+            tag = "EMI"
+        else:
+            continue
+        amount = round(abs(float(tx.amount or 0.0)), 2)
+        kind = "rent" if tag == "RENT" else "emi"
+        signature = (tx.date.day, kind, amount)
+        if signature in semantic_signatures:
+            continue
+        semantic_signatures.add(signature)
+        title = raw[:200]
+        if title.lower() in known_titles:
+            continue
+        known_titles.add(title.lower())
+        events.append(
+            {
+                "id":       600_000_000 + int(tx.id),
+                "date":     tx.date.day,
+                "type":     "bill",
+                "tag":      tag,
+                "title":    title,
+                "subtitle": "Recurring debit",
+                "amount":   f"₹{amount:,.0f}",
+            }
+        )
+
+    # Salary credits timeline from raw transactions (visible income history).
+    salary_titles: set[tuple[int, str, float]] = set()
+    for event in events:
+        if str(event.get("tag", "")).upper() != "SAL":
+            continue
+        amount = round(abs(_amount_to_float(event.get("amount"))), 2)
+        day = int(event.get("date", 0) or 0)
+        if amount > 0 and day > 0:
+            salary_titles.add((day, _normalize_calendar_title(str(event.get("title", ""))), amount))
+
+    for tx in txs:
+        if (tx.type or "").lower() != "credit" or not tx.date:
+            continue
+        raw = (tx.description or "").strip()
+        if not raw:
+            continue
+        if "salary" not in raw.lower() and "payroll" not in raw.lower():
+            continue
+        amount = round(abs(float(tx.amount or 0.0)), 2)
+        title = raw[:200]
+        salary_key = (tx.date.day, _normalize_calendar_title(title), amount)
+        if salary_key in salary_titles:
+            continue
+        salary_titles.add(salary_key)
+        events.append(
+            {
+                "id":       700_000_000 + int(tx.id),
+                "date":     tx.date.day,
+                "type":     "income",
+                "tag":      "SAL",
+                "title":    title,
+                "subtitle": "Salary credit",
+                "amount":   f"+₹{amount:,.0f}",
+            }
+        )
+
     events.sort(key=lambda event: (event["date"], event["title"]))
 
     return {

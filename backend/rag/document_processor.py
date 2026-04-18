@@ -1,6 +1,6 @@
 """
 Universal Document Processor — Astra 360
-Supports: CSV, Excel, PDF (pdfplumber + PyMuPDF fallback), Images (OCR).
+Supports: TXT, Markdown, DOCX, CSV, Excel, PDF (pdfplumber + PyMuPDF fallback), Images (OCR).
 Returns both raw text AND extracted tables for downstream parsing.
 """
 
@@ -9,6 +9,7 @@ import logging
 import fitz  # PyMuPDF
 import pandas as pd
 from typing import List, Dict, Optional, Tuple
+from zipfile import ZipFile
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,23 @@ def _extract_excel(file_path: str) -> Tuple[str, List[pd.DataFrame]]:
         raise ValueError(f"Excel parse failed: {e}") from e
 
 
+def _extract_plain_text(file_path: str) -> Tuple[str, List[pd.DataFrame]]:
+    with open(file_path, "r", encoding="utf-8") as handle:
+        return handle.read(), []
+
+
+def _extract_docx(file_path: str) -> Tuple[str, List[pd.DataFrame]]:
+    try:
+        with ZipFile(file_path) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
+        text = xml.replace("</w:p>", "\n")
+        text = text.replace("</w:t>", " ")
+        text = __import__("re").sub(r"<[^>]+>", "", text)
+        return text, []
+    except Exception as e:
+        raise ValueError(f"DOCX parse failed: {e}") from e
+
+
 # ─────────────────────────────────────────────
 # Main Entry Point
 # ─────────────────────────────────────────────
@@ -181,6 +199,15 @@ def parse_document(file_path: str, filename: str) -> Dict:
     """
     fname = filename.lower()
     logger.info(f"[DOC] Processing '{filename}' — detecting type...")
+
+    # ── CSV ──────────────────────────────────
+    if fname.endswith((".txt", ".md")):
+        text, tables = _extract_plain_text(file_path)
+        return {"text": text, "tables": tables, "method": "plain_text", "filename": filename}
+
+    if fname.endswith(".docx"):
+        text, tables = _extract_docx(file_path)
+        return {"text": text, "tables": tables, "method": "docx_zip", "filename": filename}
 
     # ── CSV ──────────────────────────────────
     if fname.endswith(".csv"):

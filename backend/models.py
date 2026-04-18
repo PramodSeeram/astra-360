@@ -11,6 +11,8 @@ class User(Base):
     name = Column(String(255), nullable=False)
     phone_number = Column(String(50), unique=True, index=True, nullable=False)
     email = Column(String(255))
+    pan = Column(String(20))
+    kyc_completed = Column(Integer, default=0)  # 0/1 flag, kept as int for cross-DB portability
     credit_score = Column(Integer, default=0)
     monthly_income = Column(Float, default=0.0)
     risk_level = Column(String(50)) # low, medium, high
@@ -22,6 +24,7 @@ class User(Base):
     bills = relationship("Bill", back_populates="user", cascade="all, delete-orphan")
     credit_accounts = relationship("CreditAccount", back_populates="user", cascade="all, delete-orphan")
     subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
+    calendar_events = relationship("CalendarEvent", back_populates="user", cascade="all, delete-orphan")
     chat_threads = relationship("ChatThread", back_populates="user", cascade="all, delete-orphan")
     financial_summary = relationship("UserFinancialSummary", back_populates="user", uselist=False, cascade="all, delete-orphan")
     processing_status = relationship("UserProcessingStatus", back_populates="user", uselist=False, cascade="all, delete-orphan")
@@ -37,8 +40,11 @@ class Transaction(Base):
     description = Column(String(255))
     date = Column(DateTime, default=datetime.datetime.utcnow)
     tx_hash = Column(String(64), unique=True, index=True) # For deduplication
+    statement_balance = Column(Float, nullable=True)  # closing balance from the statement row
+    card_id = Column(Integer, ForeignKey("cards.id"), nullable=True)  # assigned for card-based debits
 
     user = relationship("User", back_populates="transactions")
+    card = relationship("Card", back_populates="transactions")
 
 class Card(Base):
     __tablename__ = "cards"
@@ -52,6 +58,7 @@ class Card(Base):
     balance = Column(Float, default=0.0)
 
     user = relationship("User", back_populates="cards")
+    transactions = relationship("Transaction", back_populates="card")
 
 class Loan(Base):
     __tablename__ = "loans"
@@ -104,6 +111,20 @@ class Subscription(Base):
     next_billing_date = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="subscriptions")
+
+
+class CalendarEvent(Base):
+    __tablename__ = "calendar_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String(255), nullable=False)
+    event_date = Column(DateTime, nullable=False)
+    event_type = Column(String(50), default="bill")
+    amount = Column(Float, default=0.0)
+    status = Column(String(50), default="scheduled")
+
+    user = relationship("User", back_populates="calendar_events")
 
 class ChatThread(Base):
     __tablename__ = "chat_threads"

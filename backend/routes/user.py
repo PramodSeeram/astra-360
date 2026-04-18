@@ -18,12 +18,10 @@ def submit_kyc(req: KycRequest, db: Session = Depends(get_db)):
 
     pan_type = get_pan_type(req.pan)
 
-    # Update MySQL User
     user.name = f"{req.first_name} {req.last_name}"
     user.email = req.email
-    # You might want to store PAN in a separate column or just update the user record
-    # For now, let's just update the name and email
-    
+    user.pan = req.pan.upper()
+    user.kyc_completed = 1
     db.commit()
 
     print(f"\n{'='*40}")

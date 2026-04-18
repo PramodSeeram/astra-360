@@ -1,4 +1,19 @@
-const API_BASE = "http://localhost:8000";
+/**
+ * Dev: empty → same origin; Vite proxies to FastAPI (see vite.config.ts).
+ * Prod: set VITE_API_BASE to your API origin if the UI is served separately.
+ */
+function apiBase(): string {
+  const raw = import.meta.env.VITE_API_BASE;
+  if (typeof raw === "string" && raw.length > 0) {
+    return raw.replace(/\/$/, "");
+  }
+  if (import.meta.env.DEV) {
+    return "";
+  }
+  return "http://127.0.0.1:8000";
+}
+
+const API_BASE = apiBase();
 
 async function request<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -140,7 +155,7 @@ export interface CardsData {
 export interface CalendarEvent {
   id: number;
   date: number;
-  type: "bill" | "insurance" | "investment";
+  type: "bill" | "insurance" | "investment" | "income";
   tag: string;
   title: string;
   subtitle: string;

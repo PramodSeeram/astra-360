@@ -1,4 +1,6 @@
 import os
+import logging
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -7,9 +9,69 @@ from dotenv import load_dotenv
 load_dotenv()
 from database import engine, Base
 import models # Ensure models are loaded for metadata
+from sqlalchemy import inspect, text
 
 # Create tables if they don't exist
 Base.metadata.create_all(bind=engine)
+logger = logging.getLogger(__name__)
+
+
+# Idempotent column bootstrap for demo-friendly upgrades.
+# create_all does not add columns to existing tables, so we patch missing ones
+# that later code relies on (statement balance, card linkage, KYC flags).
+def _ensure_columns() -> None:
+    inspector = inspect(engine)
+
+    def cols(table: str) -> set[str]:
+        try:
+            return {c["name"] for c in inspector.get_columns(table)}
+        except Exception:
+            return set()
+
+    additions = [
+        ("transactions", "statement_balance", "FLOAT"),
+        ("transactions", "card_id", "INTEGER"),
+        ("users", "pan", "VARCHAR(20)"),
+        ("users", "kyc_completed", "INTEGER DEFAULT 0"),
+    ]
+    with engine.begin() as conn:
+        for table, column, sql_type in additions:
+            if column in cols(table):
+                continue
+            try:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+            except Exception:
+                pass
+
+
+_ensure_columns()
+
+
+def _ensure_knowledge_base() -> None:
+    """Best-effort one-time ingest so demo RAG has data on first boot."""
+    try:
+        from rag.vector_store import COLLECTION_KNOWLEDGE, client as qdrant_client
+
+        info = qdrant_client.get_collection(COLLECTION_KNOWLEDGE)
+        points = int(getattr(info, "points_count", 0) or 0)
+        if points > 0:
+            logger.info("Knowledge collection already populated (%s points).", points)
+            return
+    except Exception:
+        # Missing collection or qdrant startup race — try ingest below.
+        pass
+
+    try:
+        from services.knowledge_base_service import ingest_knowledge_documents
+
+        project_root = str(Path(__file__).resolve().parent.parent)
+        stats = ingest_knowledge_documents(project_root)
+        logger.info("Knowledge ingest completed: %s", stats)
+    except Exception as exc:
+        logger.warning("Knowledge ingest skipped: %s", exc)
+
+
+_ensure_knowledge_base()
 
 from routes.auth import router as auth_router
 from routes.user import router as user_router
