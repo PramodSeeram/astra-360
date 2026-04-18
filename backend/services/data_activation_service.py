@@ -41,6 +41,7 @@ from services.financial_engine import (
     canonical_year_month,
     compute_snapshot_from_transactions,
 )
+from services.brain_insights_service import upsert_user_insights
 from services.financial_cleanup import delete_user_financial_data
 
 logger = logging.getLogger(__name__)
@@ -1561,6 +1562,7 @@ def _build_summary(db: Session, user, raw_txs: List[Dict]) -> None:
     db.commit()
 
     _refresh_detected_commitments(db, user)
+    upsert_user_insights(db, user, limit=6)
 
 
 
@@ -1655,21 +1657,9 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
     # Seed demo cards BEFORE saving so each debit gets a card_id assigned.
     existing_cards = db.query(Card).filter(Card.user_id == user.id).count()
     if existing_cards == 0:
-        for bank_name, card_type, last4, limit_value in (
-            ("HDFC Bank", "Platinum", "1842", 120000.0),
-            ("ICICI Bank", "Amazon Pay", "7721", 80000.0),
-            ("SBI Card", "SimplyCLICK", "4510", 60000.0),
-        ):
-            db.add(
-                Card(
-                    user_id=user.id,
-                    bank_name=bank_name,
-                    card_type=card_type,
-                    last4_digits=last4,
-                    limit=limit_value,
-                    balance=0.0,
-                )
-            )
+        from services.canonical_cards import create_canonical_cards_for_user
+
+        create_canonical_cards_for_user(db, user)
         db.commit()
 
     # ── Save to DB ───────────────────────────

@@ -15,6 +15,48 @@ function apiBase(): string {
 
 const API_BASE = apiBase();
 
+/** Strip +91 / spaces; keep last 10 digits for Indian numbers (backend expects [6-9]##########). */
+export function normalizeIndianPhone(raw: string): string {
+  const d = raw.replace(/\D/g, "");
+  if (d.length >= 12 && d.startsWith("91")) return d.slice(-10);
+  if (d.length === 11 && d.startsWith("0")) return d.slice(1);
+  if (d.length > 10) return d.slice(-10);
+  return d;
+}
+
+function messageFromErrorBody(data: Record<string, unknown>): string {
+  const detail = data.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((x) =>
+        typeof x === "object" && x !== null && "msg" in x ? String((x as { msg: unknown }).msg) : String(x),
+      )
+      .join(", ");
+  }
+  if (typeof data.error === "string") return data.error;
+  return "Something went wrong";
+}
+
+/** Avoid `Unexpected end of JSON input` when the body is empty (API down, proxy 502, etc.). */
+async function parseResponseBody(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  if (!text.trim()) {
+    if (!res.ok) {
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        throw new Error("Could not reach the API. Is the backend running? (502/503)");
+      }
+      throw new Error(`Request failed (${res.status}). Empty response from server.`);
+    }
+    return {};
+  }
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`Invalid response (${res.status}): ${text.slice(0, 120)}`);
+  }
+}
+
 async function request<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${API_BASE}${endpoint}`, {
     method: "POST",
@@ -22,10 +64,10 @@ async function request<T>(endpoint: string, body: Record<string, unknown>): Prom
     body: JSON.stringify(body),
   });
 
-  const data = await res.json();
+  const data = await parseResponseBody(res);
 
   if (!res.ok) {
-    throw new Error(data.error || data.detail || "Something went wrong");
+    throw new Error(messageFromErrorBody(data));
   }
 
   return data as T;
@@ -37,10 +79,10 @@ async function get<T>(endpoint: string): Promise<T> {
     headers: { "Content-Type": "application/json" },
   });
 
-  const data = await res.json();
+  const data = await parseResponseBody(res);
 
   if (!res.ok) {
-    throw new Error(data.error || data.detail || "Something went wrong");
+    throw new Error(messageFromErrorBody(data));
   }
 
   return data as T;
@@ -74,6 +116,16 @@ export interface RagUploadResponse {
 
 // ── Dashboard Types ──
 
+export interface BrainInsight {
+  id: string;
+  type: "income" | "spending" | "risk" | "behavior" | "optimization" | "system";
+  title: string;
+  text: string;
+  suggestion?: string | null;
+  action?: string | null;
+  time: string;
+}
+
 export interface HomeSummary {
   user_id: string;
   first_name: string;
@@ -84,18 +136,16 @@ export interface HomeSummary {
   investments: number;
   credit_due: number;
   credit_score: number;
-  insights: Array<{
-    id: number;
-    type: "warning" | "info" | "success";
-    text: string;
-    action?: string;
-    time: string;
-  }>;
+  insights: BrainInsight[];
   has_data: boolean;
   source: string;
   last_updated: string | null;
   data_sources: string[];
   message: string | null;
+}
+
+export interface LatestInsightsResponse {
+  insights: BrainInsight[];
 }
 
 export interface BillItem {
@@ -192,6 +242,14 @@ export interface ChatHistoryMessage {
   thread_id: number;
 }
 
+export interface ChatResponseData {
+  thread_id?: number;
+  thread_title?: string;
+  agent_used?: string;
+  agent_trace?: Array<Record<string, unknown>>;
+  structured_output?: Record<string, unknown>;
+}
+
 export interface ProfileData {
   user_id: string;
   first_name: string;
@@ -219,15 +277,17 @@ export interface ProfileData {
 // ── API Client ──
 
 export const api = {
-  // Auth & Onboarding
+  // Auth & Onboarding (phone normalized to 10 digits for FastAPI validators)
   sendOtp: (phone: string) =>
-    request<SendOtpResponse>("/api/auth/send-otp", { phone }),
+    request<SendOtpResponse>("/api/auth/send-otp", { phone: normalizeIndianPhone(phone) }),
 
   verifyOtp: (phone: string, otp: string) =>
-    request<VerifyOtpResponse>("/api/auth/verify-otp", { phone, otp }),
+    request<VerifyOtpResponse>("/api/auth/verify-otp", { phone: normalizeIndianPhone(phone), otp }),
 
   demoLogin: (phone: string) =>
-    request<{ user_id: string; name: string; status: string }>("/api/auth/demo-login", { phone }),
+    request<{ user_id: string; name: string; status: string }>("/api/auth/demo-login", {
+      phone: normalizeIndianPhone(phone),
+    }),
 
   submitKyc: (data: {
     user_id: string;
@@ -249,10 +309,10 @@ export const api = {
       body: formData,
     });
 
-    const data = await res.json();
+    const data = await parseResponseBody(res);
 
     if (!res.ok) {
-      throw new Error(data.error || data.detail || "Upload failed");
+      throw new Error(messageFromErrorBody(data));
     }
 
     return data as RagUploadResponse;
@@ -268,9 +328,9 @@ export const api = {
       body: formData,
     });
 
-    const data = await res.json();
+    const data = await parseResponseBody(res);
     if (!res.ok) {
-      throw new Error(data.error || data.detail || "Activation failed");
+      throw new Error(messageFromErrorBody(data));
     }
     return data;
   },
@@ -281,6 +341,9 @@ export const api = {
   // Dashboard APIs
   getHomeSummary: (userId: string) =>
     get<HomeSummary>(`/api/dashboard/home?user_id=${encodeURIComponent(userId)}`),
+
+  getLatestInsights: (userId: string) =>
+    get<LatestInsightsResponse>(`/api/insights/latest?user_id=${encodeURIComponent(userId)}`),
 
   getBills: (userId: string, year?: number, month?: number) => {
     const params = new URLSearchParams({ user_id: userId });
@@ -307,9 +370,9 @@ export const api = {
     get<ProfileData>(`/api/dashboard/profile?user_id=${encodeURIComponent(userId)}`),
 
   // Agent Chat
-  chat: (userId: string, message: string, threadId?: number) =>
-    request<{ response: string; sources: string[]; data?: { thread_id?: number; thread_title?: string } }>(
+  chat: (userId: string, message: string, threadId?: number, agentHint?: string) =>
+    request<{ response: string; sources: string[]; data?: ChatResponseData }>(
       "/chat",
-      { user_id: userId, message, thread_id: threadId },
+      { user_id: userId, message, thread_id: threadId, agent_hint: agentHint },
     ),
 };

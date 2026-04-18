@@ -1,6 +1,6 @@
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Bell, TrendingUp, AlertTriangle, CheckCircle2, Brain, ChevronRight, Sparkles, Upload, Loader2 } from "lucide-react";
+import { Bell, TrendingUp, AlertTriangle, Brain, ChevronRight, Sparkles, Upload, Loader2, Lightbulb, Wallet } from "lucide-react";
 import { api, HomeSummary } from "@/lib/api";
 
 interface Props {
@@ -10,23 +10,41 @@ interface Props {
 }
 
 const typeStyles = {
-  warning: {
+  income: {
+    border: "border-emerald-400/20",
+    bg: "bg-emerald-400/10",
+    iconColor: "text-emerald-400",
+    Icon: Wallet,
+  },
+  spending: {
+    border: "border-cyan-400/20",
+    bg: "bg-cyan-400/5",
+    iconColor: "text-cyan-400",
+    Icon: TrendingUp,
+  },
+  risk: {
     border: "border-amber-500/20",
     bg: "bg-amber-500/5",
     iconColor: "text-amber-400",
     Icon: AlertTriangle,
   },
-  success: {
+  behavior: {
+    border: "border-violet-400/20",
+    bg: "bg-violet-400/10",
+    iconColor: "text-violet-300",
+    Icon: Brain,
+  },
+  optimization: {
     border: "border-[#CCFF00]/20",
     bg: "bg-[#CCFF00]/5",
     iconColor: "text-[#CCFF00]",
-    Icon: CheckCircle2,
+    Icon: Lightbulb,
   },
-  info: {
-    border: "border-cyan-400/20",
-    bg: "bg-cyan-400/5",
-    iconColor: "text-cyan-400",
-    Icon: TrendingUp,
+  system: {
+    border: "border-white/10",
+    bg: "bg-white/5",
+    iconColor: "text-gray-300",
+    Icon: Sparkles,
   },
 };
 
@@ -344,8 +362,9 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: 
 
           <div className="space-y-3">
             {insights.map((insight, i) => {
-              const style = typeStyles[insight.type] || typeStyles.info;
+              const style = typeStyles[insight.type] || typeStyles.behavior;
               const InsightIcon = style.Icon;
+              const canOpenBills = insight.action === "bills" && Boolean(onNavigate);
               return (
                 <motion.div
                   key={insight.id}
@@ -354,11 +373,11 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: 
                   transition={{ delay: 0.35 + i * 0.07 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={() => {
-                    if (insight.action === "bills" && onNavigate) {
+                    if (canOpenBills && onNavigate) {
                       onNavigate("bills");
                     }
                   }}
-                  className={`rounded-2xl bg-[#1E1E1E] border ${style.border} p-4 cursor-pointer transition-all hover:border-white/15`}
+                  className={`rounded-2xl bg-[#1E1E1E] border ${style.border} p-4 transition-all hover:border-white/15 ${canOpenBills ? "cursor-pointer" : "cursor-default"}`}
                 >
                   <div className="flex gap-3">
                     <div
@@ -367,9 +386,17 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: 
                       <InsightIcon size={14} className={style.iconColor} />
                     </div>
                     <div className="flex-1 min-w-0">
+                      <p className="text-[10px] text-gray-500 uppercase tracking-[0.18em] mb-1">
+                        {insight.title}
+                      </p>
                       <p className="text-[13px] text-white leading-relaxed font-medium">
                         {insight.text}
                       </p>
+                      {insight.suggestion && (
+                        <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
+                          <span className="text-[#CCFF00]">Suggestion:</span> {insight.suggestion}
+                        </p>
+                      )}
                       <p className="text-[10px] text-gray-500 mt-2">
                         {insight.time}
                       </p>

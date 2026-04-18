@@ -70,6 +70,15 @@ def _ensure_knowledge_base() -> None:
     except Exception as exc:
         logger.warning("Knowledge ingest skipped: %s", exc)
 
+    try:
+        from services.knowledge_base_service import upsert_card_knowledge_documents
+
+        project_root = str(Path(__file__).resolve().parent.parent)
+        card_stats = upsert_card_knowledge_documents(project_root)
+        logger.info("Card knowledge upsert: %s", card_stats)
+    except Exception as exc:
+        logger.warning("Card knowledge upsert skipped: %s", exc)
+
 
 _ensure_knowledge_base()
 
@@ -82,6 +91,7 @@ from routes.chat_routes import router as chat_router
 from routes.insurance_routes import router as insurance_router
 from routes.data import router as data_router
 from routes.dev import router as dev_router
+from routes.insights import router as insights_router
 
 
 app = FastAPI(title="Astra 360 Backend", version="2.0.0")
@@ -103,6 +113,7 @@ app.include_router(chat_router)
 app.include_router(insurance_router)
 app.include_router(data_router)
 app.include_router(dev_router)
+app.include_router(insights_router)
 
 
 @app.get("/")

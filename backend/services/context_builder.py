@@ -1,6 +1,7 @@
 import logging
 from sqlalchemy.orm import Session
-from models import User, Transaction
+from models import Card, User, Transaction
+from services.canonical_cards import ensure_canonical_cards
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 
@@ -18,6 +19,7 @@ def build_user_context(db: Session, user: User) -> Dict[str, Any]:
     Summarizes user financial data for the LLM.
     Limits data size to keep prompts efficient.
     """
+    ensure_canonical_cards(db, user)
 
     # 1. Profile Summary
     profile = {
@@ -32,24 +34,30 @@ def build_user_context(db: Session, user: User) -> Dict[str, Any]:
     total_credit_limit = 0.0
     total_card_balance = 0.0
 
-    for card in user.cards:
+    card_rows = (
+        db.query(Card)
+        .filter(Card.user_id == user.id)
+        .order_by(Card.id.asc())
+        .all()
+    )
+    for card in card_rows:
         total_credit_limit += card.limit or 0.0
         total_card_balance += card.balance or 0.0
     for account in user.credit_accounts:
         total_credit_limit += account.credit_limit or 0.0
         total_card_balance += account.used_amount or 0.0
 
-    for card in user.cards[:2]:
+    for card in card_rows[:3]:
         card_limit = card.limit or 0.0
         card_balance = card.balance or 0.0
         utilization = (card_balance / card_limit * 100) if card_limit > 0 else 0
         cards_data.append({
             "bank": card.bank_name,
             "type": card.card_type,
+            "last4": card.last4_digits,
             "limit": _money(card_limit),
             "used": _money(card_balance),
             "utilization_pct": round(utilization, 1),
-            "key_offers": "10% off on Amazon" if "HDFC" in card.bank_name else "5x points on dining"
         })
     if not cards_data:
         for account in user.credit_accounts[:2]:

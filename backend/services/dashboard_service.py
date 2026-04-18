@@ -13,6 +13,7 @@ from collections import defaultdict
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
 from models import Bill, CalendarEvent, Card, CreditAccount, Subscription, Transaction, User, UserFinancialSummary, UserProcessingStatus, get_user_by_external_id
+from services.brain_insights_service import get_latest_insights, prepend_processing_banner
 from services.financial_engine import _EMI_IN_DESC, _RENT_IN_DESC, canonical_year_month
 from services.user_state import get_user_state
 
@@ -326,14 +327,9 @@ def get_home_data(db: Session, external_id: str) -> dict | None:
     is_active = state == "ACTIVE"
     is_partial = state == "PARTIAL"
 
-    insights = _build_home_insights(
-        state=state,
-        monthly_income=monthly_income,
-        monthly_spend=monthly_spend,
-        total_savings=total_savings,
-        total_credit_due=total_credit_due,
-        category_dist=category_dist,
-    )
+    insights = get_latest_insights(db, user, limit=6) if has_data else []
+    if is_partial and insights:
+        insights = prepend_processing_banner(insights)
 
     cibil = build_mock_cibil(user)
 
@@ -496,6 +492,10 @@ def get_cards_data(db: Session, external_id: str) -> dict | None:
     if not user:
         return None
 
+    from services.canonical_cards import ensure_canonical_cards
+
+    ensure_canonical_cards(db, user)
+
     CARD_GRADIENTS = [
         ("#1A2980", "#26D0CE"),
         ("#EB3349", "#F45C43"),
@@ -514,8 +514,14 @@ def get_cards_data(db: Session, external_id: str) -> dict | None:
             continue
         used_by_card[tx.card_id] += abs(float(tx.amount or 0.0))
 
+    card_rows = (
+        db.query(Card)
+        .filter(Card.user_id == user.id)
+        .order_by(Card.id.asc())
+        .all()
+    )
     cards = []
-    for i, c in enumerate(user.cards):
+    for i, c in enumerate(card_rows):
         used_amount = round(used_by_card.get(c.id, float(c.balance or 0.0)), 2)
         cards.append(
             {
@@ -527,20 +533,6 @@ def get_cards_data(db: Session, external_id: str) -> dict | None:
                 "used": f"₹{used_amount:,.0f}",
                 "color1": CARD_GRADIENTS[i % len(CARD_GRADIENTS)][0],
                 "color2": CARD_GRADIENTS[i % len(CARD_GRADIENTS)][1],
-            }
-        )
-    base_index = len(cards)
-    for j, account in enumerate(user.credit_accounts):
-        cards.append(
-            {
-                "id": 100000 + account.id,
-                "bank": account.provider,
-                "type": "Credit Line",
-                "number": "•••• DEMO",
-                "limit": f"₹{account.credit_limit:,.0f}",
-                "used": f"₹{account.used_amount:,.0f}",
-                "color1": CARD_GRADIENTS[(base_index + j) % len(CARD_GRADIENTS)][0],
-                "color2": CARD_GRADIENTS[(base_index + j) % len(CARD_GRADIENTS)][1],
             }
         )
 

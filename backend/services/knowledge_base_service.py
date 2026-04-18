@@ -14,6 +14,7 @@ CATEGORY_HINTS = {
     "insurance": ("insurance", "claim", "policy"),
     "tax": ("tax", "itr", "gst"),
     "finance": ("finance", "investment", "bank", "interest"),
+    "cards": ("card", "credit", "swiggy", "cashback", "zomato", "co-brand"),
 }
 
 
@@ -31,6 +32,8 @@ def resolve_knowledge_dir(base_dir: str) -> Path:
 
 def infer_category(file_name: str) -> str:
     lower_name = file_name.lower()
+    if "cards_canonical" in lower_name or lower_name.startswith("cards_"):
+        return "cards"
     for category, keywords in CATEGORY_HINTS.items():
         if any(keyword in lower_name for keyword in keywords):
             return category
@@ -86,6 +89,27 @@ def ingest_knowledge_documents(base_dir: str) -> Dict[str, int]:
         "skipped_files": skipped_files,
         "chunks_inserted": inserted,
     }
+
+
+def upsert_card_knowledge_documents(base_dir: str) -> Dict[str, int]:
+    """Idempotently upsert only ``qdrant_docs/cards_canonical.md`` (category ``cards``).
+
+    Safe to call on every boot so card RAG stays aligned with the canonical trio.
+    """
+    docs_dir = resolve_knowledge_dir(base_dir)
+    path = docs_dir / "cards_canonical.md"
+    if not path.is_file():
+        logger.warning("Card knowledge file missing: %s", path)
+        return {"chunks_inserted": 0, "skipped": 1}
+
+    file_chunks = build_chunks_for_file(path)
+    if not file_chunks:
+        return {"chunks_inserted": 0, "skipped": 1}
+
+    embeddings = generate_embeddings(chunk["text"] for chunk in file_chunks)
+    inserted = upsert_knowledge_points(file_chunks, embeddings, collection_name=COLLECTION_KNOWLEDGE)
+    logger.info("Card knowledge upserted: %s chunks from cards_canonical.md", inserted)
+    return {"chunks_inserted": inserted, "skipped": 0}
 
 
 MIN_GOOD_SCORE = 0.55

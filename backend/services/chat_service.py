@@ -9,6 +9,7 @@ or RAG + knowledge agents without a planner.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -24,9 +25,16 @@ from services.chat_policy import (
 from services.financial_engine import build_financial_snapshot, render_finance_answer
 from services.knowledge_agents import answer_with_knowledge
 from services.knowledge_base_service import retrieve_context
+from services.multi_agent_service import run_multi_agent_service
 from services.user_context_service import build_user_context
 
 logger = logging.getLogger(__name__)
+
+USE_MULTI_AGENT = os.getenv("USE_MULTI_AGENT", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def build_chat_response(
@@ -35,6 +43,7 @@ def build_chat_response(
     message: str,
     memory: Optional[List[Dict[str, Any]]] = None,
     route: Optional[AgentRoute] = None,
+    agent_hint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Produce a normalized chat payload for the UI."""
 
@@ -42,6 +51,19 @@ def build_chat_response(
         route = route_query(message)
 
     memory = memory or []
+
+    if USE_MULTI_AGENT:
+        try:
+            return run_multi_agent_service(
+                db=db,
+                user=user,
+                message=message,
+                memory=memory,
+                route=route,
+                agent_hint=agent_hint,
+            )
+        except Exception as exc:
+            logger.exception("multi-agent chat failed, falling back to agentic: %s", exc)
 
     if USE_AGENTIC_CHAT:
         try:

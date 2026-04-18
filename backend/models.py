@@ -28,6 +28,7 @@ class User(Base):
     chat_threads = relationship("ChatThread", back_populates="user", cascade="all, delete-orphan")
     financial_summary = relationship("UserFinancialSummary", back_populates="user", uselist=False, cascade="all, delete-orphan")
     processing_status = relationship("UserProcessingStatus", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    insights = relationship("UserInsight", back_populates="user", cascade="all, delete-orphan")
 
 class Transaction(Base):
     __tablename__ = "transactions"
@@ -179,6 +180,24 @@ class UserProcessingStatus(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="processing_status")
+
+
+class UserInsight(Base):
+    __tablename__ = "user_insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    type = Column(String(50), nullable=False)
+    title = Column(String(255), nullable=False)
+    text = Column(Text, nullable=False)
+    suggestion = Column(Text, nullable=True)
+    month = Column(String(7), nullable=False)
+    time_label = Column(String(50), nullable=True)
+    action = Column(String(50), nullable=True)
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    user = relationship("User", back_populates="insights")
 
 # Helper functions
 def get_user_by_external_id(db, external_id):

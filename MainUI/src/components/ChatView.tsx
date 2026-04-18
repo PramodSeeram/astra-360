@@ -7,6 +7,7 @@ interface Message {
   id: number;
   role: "user" | "ai";
   text: string;
+  agentUsed?: string;
 }
 
 interface Props {
@@ -15,7 +16,13 @@ interface Props {
   onBack: () => void;
 }
 
-const ChatView = ({ initialMessage, onBack }: Props) => {
+function formatAgentLabel(agent?: string): string {
+  if (!agent?.trim()) return "";
+  const words = agent.replace(/_/g, " ").trim().split(/\s+/);
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+}
+
+const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<number | null>(null);
@@ -23,6 +30,7 @@ const ChatView = ({ initialMessage, onBack }: Props) => {
   const [typing, setTyping] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [agentHint, setAgentHint] = useState(initialAgent);
   const scrollRef = useRef<HTMLDivElement>(null);
   const initSent = useRef(false);
 
@@ -63,6 +71,10 @@ const ChatView = ({ initialMessage, onBack }: Props) => {
       setLoadingHistory(false);
     }
   };
+
+  useEffect(() => {
+    setAgentHint(initialAgent);
+  }, [initialAgent]);
 
   useEffect(() => {
     loadThreads().catch((error) => {
@@ -112,7 +124,8 @@ const ChatView = ({ initialMessage, onBack }: Props) => {
     setTyping(true);
 
     try {
-      const data = await api.chat(userId, text, activeThreadId ?? undefined);
+      const requestAgentHint = activeThreadId === null ? agentHint : undefined;
+      const data = await api.chat(userId, text, activeThreadId ?? undefined, requestAgentHint);
       const returnedThreadId = data.data?.thread_id ?? null;
       if (returnedThreadId && returnedThreadId !== activeThreadId) {
         setActiveThreadId(returnedThreadId);
@@ -124,6 +137,7 @@ const ChatView = ({ initialMessage, onBack }: Props) => {
           id: optimisticId + 1,
           role: "ai",
           text: data.response,
+          agentUsed: data.data?.agent_used,
         },
       ]);
 
@@ -140,6 +154,7 @@ const ChatView = ({ initialMessage, onBack }: Props) => {
       ]);
     } finally {
       setTyping(false);
+      setAgentHint(undefined);
     }
   };
 
@@ -262,7 +277,12 @@ const ChatView = ({ initialMessage, onBack }: Props) => {
                       : "bg-card border border-border/30 rounded-bl-md"
                   }`}
                 >
-                  <p className="whitespace-pre-wrap">{msg.text}</p>
+                  {msg.role === "ai" && msg.agentUsed ? (
+                    <div className="mb-2 inline-flex rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium tracking-wide text-primary">
+                      {formatAgentLabel(msg.agentUsed)}
+                    </div>
+                  ) : null}
+                  <p className="whitespace-pre-wrap break-words">{typeof msg.text === "string" ? msg.text : ""}</p>
                 </div>
               </motion.div>
             ))}

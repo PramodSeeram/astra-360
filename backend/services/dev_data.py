@@ -4,7 +4,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from models import Bill, CreditAccount, Subscription, Transaction, User, UserFinancialSummary, UserProcessingStatus
+from models import Bill, Card, CreditAccount, Subscription, Transaction, User, UserFinancialSummary, UserProcessingStatus
+from services.canonical_cards import card_id_for_debit, create_canonical_cards_for_user
 
 
 ACTIVE_DEMO_USER_ID = "demo_user_1"
@@ -98,6 +99,11 @@ DEMO_USERS: list[dict[str, Any]] = [
 ]
 
 
+def _demo_cards_for_user(db: Session, user: User) -> dict[str, int]:
+    """Create the three canonical cards; return map keys sbi, federal, hdfc -> card id."""
+    return create_canonical_cards_for_user(db, user)
+
+
 def normalize_category(category: str | None) -> str | None:
     if not category:
         return None
@@ -136,11 +142,14 @@ def seed_demo_data(db: Session) -> dict[str, Any]:
         user.risk_level = "medium" if external_id in {"demo_user_1", "demo_user_2", "demo_user_3"} else "low"
 
         db.query(Transaction).filter(Transaction.user_id == user.id).delete()
+        db.query(Card).filter(Card.user_id == user.id).delete()
         db.query(Bill).filter(Bill.user_id == user.id).delete()
         db.query(CreditAccount).filter(CreditAccount.user_id == user.id).delete()
         db.query(Subscription).filter(Subscription.user_id == user.id).delete()
         db.query(UserFinancialSummary).filter(UserFinancialSummary.user_id == user.id).delete()
         db.query(UserProcessingStatus).filter(UserProcessingStatus.user_id == user.id).delete()
+
+        card_ids = _demo_cards_for_user(db, user)
 
         transactions = payload.get("transactions", [])
         monthly_spend = 0.0
@@ -149,6 +158,9 @@ def seed_demo_data(db: Session) -> dict[str, Any]:
         for index, item in enumerate(transactions):
             category = normalize_category(item.get("category"))
             amount = float(item["amount"])
+            cid = None
+            if item["type"] == "debit":
+                cid = card_id_for_debit(card_ids, item.get("desc") or "", item.get("category"))
             tx = Transaction(
                 user_id=user.id,
                 amount=amount,
@@ -157,6 +169,7 @@ def seed_demo_data(db: Session) -> dict[str, Any]:
                 description=item["desc"],
                 date=_dt(item["date"]),
                 tx_hash=f"{external_id}_{index}",
+                card_id=cid,
             )
             db.add(tx)
             if item["type"] == "debit":

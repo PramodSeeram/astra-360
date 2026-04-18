@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     user_id: str
     message: str
     thread_id: Optional[int] = None
+    agent_hint: Optional[str] = None
 
 
 class ChatThreadSummary(BaseModel):
@@ -139,6 +140,7 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             message=request.message,
             memory=memory,
             route=route,
+            agent_hint=request.agent_hint,
         )
 
         # 5. Save Assistant Message
