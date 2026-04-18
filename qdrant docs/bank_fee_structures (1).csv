@@ -1,0 +1,21 @@
+Bank Name,Minimum Balance (₹),Penalty Charges,ATM Withdrawal Charges,Forex Markup
+SBI,3000,₹10–₹15 per ₹100 shortfall,"5 free, then ₹23",3.5%
+HDFC Bank,10000,₹600/month,"5 free, then ₹23",3.5%
+ICICI Bank,10000,₹500/month,"5 free, then ₹23",3.5%
+Axis Bank,10000,₹600/month,"5 free, then ₹23",3.5%
+Kotak Mahindra Bank,10000,₹600/month,"5 free, then ₹23",3.5%
+Yes Bank,10000,₹500/month,"5 free, then ₹23",3.5%
+IndusInd Bank,10000,₹500/month,"5 free, then ₹23",3.5%
+IDFC FIRST Bank,10000,₹500/month,Unlimited free (conditions),2.5–3.5%
+PNB,2000,₹400/quarter,"5 free, then ₹23",3.5%
+Bank of Baroda,2000,₹400/quarter,"5 free, then ₹23",3.5%
+Canara Bank,2000,₹300/quarter,"5 free, then ₹23",3.5%
+Union Bank,2000,₹250/quarter,"5 free, then ₹23",3.5%
+Indian Bank,2000,₹200/quarter,"5 free, then ₹23",3.5%
+Central Bank of India,2000,₹150/quarter,"5 free, then ₹23",3.5%
+UCO Bank,1000,₹100/quarter,"5 free, then ₹23",3.5%
+Bank of India,2000,₹300/quarter,"5 free, then ₹23",3.5%
+Airtel Payments Bank,0,No penalty,Free digital,2–3%
+Paytm Payments Bank,0,No penalty,Limited ATM,2–3%
+AU Small Finance Bank,5000,₹300/month,"5 free, then ₹23",3.5%
+Bandhan Bank,5000,₹300/month,"5 free, then ₹23",3.5%
