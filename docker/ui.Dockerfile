@@ -5,6 +5,9 @@ WORKDIR /app
 COPY MainUI/package*.json ./
 RUN npm install
 
+ARG VITE_API_BASE=http://localhost
+ENV VITE_API_BASE=${VITE_API_BASE}
+
 COPY MainUI .
 RUN npm run build
 
