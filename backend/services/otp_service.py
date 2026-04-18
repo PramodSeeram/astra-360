@@ -9,7 +9,7 @@ MAX_ATTEMPTS = 3
 RESEND_COOLDOWN = 30
 
 
-def generate_otp(phone: str) -> dict:
+def generate_otp(phone: str, background_tasks=None) -> dict:
     now = time.time()
 
     if phone in otp_store:
@@ -27,8 +27,11 @@ def generate_otp(phone: str) -> dict:
         "last_sent": now,
     }
 
-    # Try sending via Twilio for all numbers if configured, else fallback to console
-    send_via_twilio(phone, otp)
+    # Try sending via Twilio asynchronously if background_tasks provided
+    if background_tasks:
+        background_tasks.add_task(send_via_twilio, phone, otp)
+    else:
+        send_via_twilio(phone, otp)
 
     return {"otp": otp}
 

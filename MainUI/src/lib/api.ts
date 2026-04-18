@@ -86,6 +86,7 @@ export interface HomeSummary {
 export interface BillItem {
   name: string;
   amount: number;
+  avg?: number;
   provider?: string;
   due_date?: string;
   next_billing?: string;
@@ -94,9 +95,11 @@ export interface BillItem {
 }
 
 export interface BillsData {
-  subscriptions: BillItem[];
-  utilities: BillItem[];
-  total_monthly: number;
+  month: string;
+  year: number;
+  month_number: number;
+  bills: BillItem[];
+  total_outflow: number;
   due_this_week: number;
   has_data: boolean;
   source: string;
@@ -145,12 +148,33 @@ export interface CalendarEvent {
 }
 
 export interface CalendarData {
+  month: string;
+  year: number;
+  month_number: number;
   events: CalendarEvent[];
+  daily_spend: Record<string, number>;
+  total_month_spend: number;
   has_data: boolean;
   source: string;
   last_updated: string | null;
   data_sources: string[];
   message: string | null;
+}
+
+export interface ChatThread {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  preview?: string | null;
+}
+
+export interface ChatHistoryMessage {
+  id: number;
+  role: string;
+  content: string;
+  timestamp: string;
+  thread_id: number;
 }
 
 export interface ProfileData {
@@ -243,19 +267,34 @@ export const api = {
   getHomeSummary: (userId: string) =>
     get<HomeSummary>(`/api/dashboard/home?user_id=${encodeURIComponent(userId)}`),
 
-  getBills: (userId: string) =>
-    get<BillsData>(`/api/dashboard/bills?user_id=${encodeURIComponent(userId)}`),
+  getBills: (userId: string, year?: number, month?: number) => {
+    const params = new URLSearchParams({ user_id: userId });
+    if (year) params.set("year", String(year));
+    if (month) params.set("month", String(month));
+    return get<BillsData>(`/api/dashboard/bills?${params.toString()}`);
+  },
 
   getCards: (userId: string) =>
     get<CardsData>(`/api/dashboard/cards?user_id=${encodeURIComponent(userId)}`),
 
-  getCalendar: (userId: string) =>
-    get<CalendarData>(`/api/dashboard/calendar?user_id=${encodeURIComponent(userId)}`),
+  getCalendar: (userId: string, year: number, month: number) =>
+    get<CalendarData>(
+      `/api/dashboard/calendar?user_id=${encodeURIComponent(userId)}&year=${year}&month=${month}`,
+    ),
+
+  getChatThreads: (userId: string) =>
+    get<ChatThread[]>(`/chat/threads?user_id=${encodeURIComponent(userId)}`),
+
+  getChatHistory: (userId: string, threadId: number) =>
+    get<ChatHistoryMessage[]>(`/chat/history?user_id=${encodeURIComponent(userId)}&thread_id=${threadId}`),
 
   getProfile: (userId: string) =>
     get<ProfileData>(`/api/dashboard/profile?user_id=${encodeURIComponent(userId)}`),
 
   // Agent Chat
-  chat: (userId: string, message: string) =>
-    request<{ response: string; sources: string[] }>("/chat", { user_id: userId, message }),
+  chat: (userId: string, message: string, threadId?: number) =>
+    request<{ response: string; sources: string[]; data?: { thread_id?: number; thread_title?: string } }>(
+      "/chat",
+      { user_id: userId, message, thread_id: threadId },
+    ),
 };

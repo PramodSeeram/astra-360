@@ -10,7 +10,7 @@ from rag.vector_store import (
     COLLECTION_INSIGHTS,
     COLLECTION_TRANSACTIONS,
 )
-from services.data_activation_service import extract_bank_transactions, vectorize_financial_rag_async
+from services.data_activation_service import extract_bank_transactions_async, vectorize_financial_rag_async
 
 router = APIRouter(prefix="/rag", tags=["RAG Pipeline"])
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ async def upload_document(file: UploadFile = File(...)):
     file_path = ""
     try:
         file_path = save_upload_file_tmp(file)
-        transactions, extraction_meta = extract_bank_transactions(file_path, filename)
+        transactions, extraction_meta = await extract_bank_transactions_async(file_path, filename)
         logger.info(
             "Financial extraction complete: method=%s raw=%s valid=%s",
             extraction_meta["method"],

@@ -1,11 +1,11 @@
 import logging
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
-from agents.wealth_agent import get_chat_response, detect_intent
+from agents.wealth_agent import get_chat_response, detect_agent, detect_intent
 from database import get_db
 from sqlalchemy.orm import Session
 from fastapi import Depends, APIRouter, HTTPException
-from models import get_user_by_external_id, get_or_create_thread, ChatMessage
+from models import get_user_by_external_id, ChatMessage, ChatThread
 from services.context_builder import build_user_context
 from services.user_state import get_user_state
 
@@ -15,6 +15,30 @@ router = APIRouter(prefix="/chat", tags=["Agent Chat"])
 class ChatRequest(BaseModel):
     user_id: str
     message: str
+    thread_id: Optional[int] = None
+
+
+class ChatThreadSummary(BaseModel):
+    id: int
+    title: str
+    created_at: str
+    updated_at: str
+    preview: Optional[str] = None
+
+
+def _get_thread_for_request(db: Session, user_id: int, thread_id: Optional[int]) -> Optional[ChatThread]:
+    if thread_id is None:
+        return None
+    return (
+        db.query(ChatThread)
+        .filter(ChatThread.id == thread_id, ChatThread.user_id == user_id)
+        .first()
+    )
+
+
+def _build_thread_title(message: str) -> str:
+    text = " ".join((message or "").strip().split())
+    return (text[:40].rstrip() or "New Chat")
 
 class ChatResponse(BaseModel):
     type: str
@@ -34,13 +58,20 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
     try:
         if not request.message or not request.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
-        
+
         # 1. Fetch User and Thread
         user = get_user_by_external_id(db, request.user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found.")
-        
-        thread = get_or_create_thread(db, user)
+
+        thread = _get_thread_for_request(db, user.id, request.thread_id)
+        if request.thread_id is not None and not thread:
+            raise HTTPException(status_code=404, detail="Thread not found.")
+        if thread is None:
+            thread = ChatThread(user_id=user.id, title=_build_thread_title(request.message))
+            db.add(thread)
+            db.commit()
+            db.refresh(thread)
 
         # 1.5 Check User State for Activation Prompt
         state = get_user_state(db, user)
@@ -53,36 +84,50 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             )
 
         # 2. Detect Intent
-        intent, confidence = detect_intent(request.message)
-        logger.info(f"Detected intent: {intent} ({confidence})")
+        routed_agent = detect_agent(request.message)
+        intent_data = {
+            "agent": routed_agent,
+            "intent": detect_intent(request.message),
+        }
+        if isinstance(intent_data, dict):
+            intent = intent_data.get("agent", "wealth")
+            confidence = intent_data.get("confidence", 1.0)
+        else:
+            intent = intent_data
+            confidence = 1.0
+        logger.info(f"Detected agent: {intent} ({confidence})")
 
-        # 3. Insurance Trigger
-        # If user mentions accident/crash or intent is insurance, trigger upload flow
-        insurance_keywords = ["accident", "crash", "damage", "hit", "insurance", "claim"]
-        if intent == "insurance" or any(kw in request.message.lower() for kw in insurance_keywords):
-            resp = ChatResponse(
-                type="insurance_upload_required",
-                response="I'm sorry to hear that. Please upload an image of the damage or document so I can analyze your insurance coverage.",
-                ui_action="open_camera",
-                actions=["upload_photo", "call_emergency"]
-            )
-            # Save message
-            assistant_msg = ChatMessage(thread_id=thread.id, role="assistant", content=resp.response)
-            db.add(assistant_msg)
-            db.commit()
-            return resp
-
-        # 4. Build User Context
+        # 3. Build User Context
         user_context = build_user_context(db, user)
 
-        # 5. Save User Message
+        # 4. Save User Message
         user_msg = ChatMessage(thread_id=thread.id, role="user", content=request.message)
         db.add(user_msg)
+        if not thread.title or thread.title == "Main Chat":
+            thread.title = _build_thread_title(request.message)
         db.commit()
 
-        # 6. Get AI Response with Context
-        result = get_chat_response(request.message, user_context=user_context, intent=intent)
-        
+        # 5. Build compact conversation memory after saving the latest user answer.
+        recent_messages = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.thread_id == thread.id)
+            .order_by(ChatMessage.timestamp.desc(), ChatMessage.id.desc())
+            .limit(5)
+            .all()
+        )
+        memory = [
+            {"role": msg.role, "content": msg.content}
+            for msg in reversed(recent_messages)
+        ]
+
+        # 6. Get AI Response with context and memory.
+        result = get_chat_response(
+            request.message,
+            user_context=user_context,
+            intent_data=intent_data,
+            memory=memory,
+        )
+
         # 7. Save Assistant Message
         assistant_msg = ChatMessage(thread_id=thread.id, role="assistant", content=result["response"])
         db.add(assistant_msg)
@@ -95,7 +140,11 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             actions=result.get("actions", []),
             sources=result["sources"],
             confidence=confidence,
-            data=user_context if intent != "general" else None
+            data={
+                **(user_context if intent == "wealth" else {}),
+                "thread_id": thread.id,
+                "thread_title": thread.title,
+            } if intent == "wealth" else {"thread_id": thread.id, "thread_title": thread.title}
         )
 
     except ValueError as e:
@@ -104,3 +153,72 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
         logger.error(f"Chat Error: {e}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/threads", response_model=List[ChatThreadSummary])
+def get_threads(user_id: str, db: Session = Depends(get_db)):
+    if not user_id or not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required.")
+
+    user = get_user_by_external_id(db, user_id.strip())
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    threads = (
+        db.query(ChatThread)
+        .filter(ChatThread.user_id == user.id)
+        .order_by(ChatThread.created_at.desc(), ChatThread.id.desc())
+        .all()
+    )
+
+    results: List[ChatThreadSummary] = []
+    for thread in threads:
+        latest_message = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.thread_id == thread.id)
+            .order_by(ChatMessage.timestamp.desc(), ChatMessage.id.desc())
+            .first()
+        )
+        updated_at = latest_message.timestamp if latest_message else thread.created_at
+        preview = latest_message.content[:80] if latest_message else None
+        results.append(
+            ChatThreadSummary(
+                id=thread.id,
+                title=thread.title or "New Chat",
+                created_at=thread.created_at.isoformat(),
+                updated_at=updated_at.isoformat(),
+                preview=preview,
+            )
+        )
+    return results
+
+
+@router.get("/history")
+def get_history(user_id: str, thread_id: int, db: Session = Depends(get_db)):
+    if not user_id or not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required.")
+
+    user = get_user_by_external_id(db, user_id.strip())
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    thread = _get_thread_for_request(db, user.id, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found.")
+
+    msgs = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.thread_id == thread.id)
+        .order_by(ChatMessage.timestamp.asc(), ChatMessage.id.asc())
+        .all()
+    )
+    return [
+        {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "timestamp": m.timestamp.isoformat(),
+            "thread_id": thread.id,
+        }
+        for m in msgs
+    ]

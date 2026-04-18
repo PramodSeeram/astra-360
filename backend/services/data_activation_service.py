@@ -3,17 +3,19 @@ Data Activation Service — Astra 360
 4-Stage fallback-driven ingestion pipeline:
   Stage 1 → Structured table extraction (CSV/Excel/PDF tables via pandas)
   Stage 2 → Regex heuristic extraction (from raw text, multi-bank patterns)
-  Stage 3 → LLM categorization (only if transactions already found)
+  Stage 3 → Hybrid categorization: rules/cache first, AI fallback only for unknowns
   Stage 4 → LLM fallback extraction (only if stages 1+2 both yield 0 results)
 """
 
 import os
 import re
 import json
+import asyncio
 import logging
 import datetime
 import hashlib
 import pandas as pd
+import httpx
 from typing import List, Dict, Tuple, Optional
 from sqlalchemy.orm import Session
 
@@ -25,7 +27,7 @@ from models import (
 from rag.document_processor import parse_document
 from rag.embeddings import generate_embeddings, generate_embeddings_async
 from rag.vector_store import insert_transactions, insert_insight
-from agents.wealth_agent import call_llm, LLM_MODEL
+from agents.wealth_agent import call_llm, LLM_MODEL, LLM_URL
 
 logger = logging.getLogger(__name__)
 
@@ -38,32 +40,196 @@ LOW_CONFIDENCE_THRESHOLD = 0.3
 
 
 # ─────────────────────────────────────────────
-# KEYWORD CATEGORY RULES (pre-LLM, fast)
+# HYBRID TRANSACTION CATEGORIZATION
 # ─────────────────────────────────────────────
-CATEGORY_RULES: List[Tuple[List[str], str]] = [
-    (["swiggy", "zomato", "dominos", "pizza", "kfc", "mcdonald", "blinkit", "dunzo"], "Food & Dining"),
-    (["amazon", "flipkart", "myntra", "meesho", "ajio", "nykaa", "snapdeal"], "Shopping"),
-    (["uber", "ola", "rapido", "irctc", "railway", "makemytrip", "goibibo", "indigo", "spicejet"], "Travel"),
-    (["netflix", "spotify", "prime", "hotstar", "disney", "youtube", "zee5", "subscription"], "Subscriptions"),
-    (["salary", "payroll", "employer", "credited by", "neft cr"], "Salary"),
-    (["emi", "loan", "home loan", "car loan", "bajaj", "hdfc loan", "icici loan"], "EMI / Loans"),
-    (["electricity", "water", "gas", "broadband", "airtel", "jio", "bsnl", "recharge", "utility"], "Utilities"),
-    (["rent", "landlord", "house rent", "pg", "accommodation"], "Rent / Housing"),
-    (["hospital", "pharmacy", "medicine", "apollo", "medplus", "health"], "Healthcare"),
-    (["atm", "cash withdrawal", "cash deposit"], "Cash"),
-    (["interest", "fd interest", "dividend", "mutual fund", "sip", "zerodha", "groww"], "Investments"),
-    (["tax", "tds", "gst", "income tax"], "Tax"),
-    (["insurance", "lic", "premium"], "Insurance"),
-    (["transfer", "upi", "neft", "imps", "rtgs", "self transfer"], "Transfers"),
-]
+STANDARD_CATEGORIES = (
+    "Food",
+    "Shopping",
+    "Transport",
+    "Utilities",
+    "Bills",
+    "Transfers",
+    "Entertainment",
+    "Other",
+)
+
+CATEGORY_MAP = {
+    "swiggy": "Food",
+    "zomato": "Food",
+    "amazon": "Shopping",
+    "flipkart": "Shopping",
+    "uber": "Transport",
+    "ola": "Transport",
+    "electricity": "Utilities",
+    "netflix": "Entertainment",
+}
+
+CATEGORY_CACHE: Dict[str, str] = {}
+CATEGORY_TIMEOUT_SECONDS = float(os.getenv("CATEGORY_TIMEOUT_SECONDS", "15"))
+CATEGORY_CONCURRENCY = int(os.getenv("CATEGORY_CONCURRENCY", "5"))
+
+_CATEGORY_PROMPT = (
+    "Categorize this transaction into one of: "
+    "Food, Shopping, Transport, Utilities, Bills, Transfers, Entertainment, Other. "
+    "Transaction: {description}. Return only category."
+)
+_PAYMENT_PREFIX_RE = re.compile(r"\b(?:UPI|NEFT|IMPS|RTGS)\b[-/:]*", re.IGNORECASE)
+_STRONG_TRANSFER_RE = re.compile(
+    r"\b(?:neft|imps|rtgs|self transfer|fund transfer|account transfer|transfer to|transfer from)\b",
+    re.IGNORECASE,
+)
+
+
+def clean_description(description: str) -> str:
+    """Normalize noisy bank descriptions before categorization."""
+    desc = str(description or "")
+    desc = _PAYMENT_PREFIX_RE.sub(" ", desc)
+    desc = re.sub(r"\d+", " ", desc)
+    desc = desc.lower()
+    desc = re.sub(r"[^a-z\s&]", " ", desc)
+    return re.sub(r"\s+", " ", desc).strip()
+
+
+def _cache_keys(description: str, cleaned: str) -> List[str]:
+    raw = str(description or "").strip()
+    keys = [raw]
+    if raw.lower() not in keys:
+        keys.append(raw.lower())
+    if cleaned and cleaned not in keys:
+        keys.append(cleaned)
+    return [key for key in keys if key]
+
+
+def _standardize_category(category: str) -> str:
+    text = str(category or "").strip().splitlines()[0]
+    normalized = re.sub(r"[^a-zA-Z &/]", " ", text).lower()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    exact = {category.lower(): category for category in STANDARD_CATEGORIES}
+    if normalized in exact:
+        return exact[normalized]
+
+    aliases = [
+        (("transfer", "neft", "imps", "rtgs", "upi transfer", "self transfer"), "Transfers"),
+        (("food", "dining", "restaurant", "restaurants", "grocery", "groceries"), "Food"),
+        (("shop", "shopping", "retail", "ecommerce", "e commerce", "purchase"), "Shopping"),
+        (("transport", "transportation", "travel", "cab", "taxi", "ride"), "Transport"),
+        (("utility", "utilities", "electricity", "water", "gas", "broadband"), "Utilities"),
+        (("bill", "bills", "emi", "loan", "rent", "insurance", "premium"), "Bills"),
+        (("entertainment", "subscription", "subscriptions", "streaming", "ott", "movie"), "Entertainment"),
+        (("other", "misc", "miscellaneous", "unknown"), "Other"),
+    ]
+    for needles, value in aliases:
+        if any(needle in normalized for needle in needles):
+            return value
+    return "Other"
+
+
+def rule_categorize(description: str) -> Optional[str]:
+    desc = clean_description(description)
+    for key, value in CATEGORY_MAP.items():
+        if key in desc:
+            return value
+    return None
+
 
 def _keyword_category(description: str) -> Optional[str]:
-    """Fast keyword-based categorization before LLM."""
-    desc_lower = description.lower()
-    for keywords, category in CATEGORY_RULES:
-        if any(kw in desc_lower for kw in keywords):
-            return category
+    """Backward-compatible alias for the fast rule classifier."""
+    return rule_categorize(description)
+
+
+def _cached_or_rule_category(description: str, cleaned: str) -> Optional[str]:
+    for key in _cache_keys(description, cleaned):
+        if key in CATEGORY_CACHE:
+            return CATEGORY_CACHE[key]
+
+    category = rule_categorize(cleaned)
+    if not category and _STRONG_TRANSFER_RE.search(str(description or "")):
+        category = "Transfers"
+
+    if category:
+        category = _standardize_category(category)
+        _store_category(description, cleaned, category)
+        return category
     return None
+
+
+def _store_category(description: str, cleaned: str, category: str) -> None:
+    standardized = _standardize_category(category)
+    for key in _cache_keys(description, cleaned):
+        CATEGORY_CACHE[key] = standardized
+
+
+async def ai_categorize(description: str, semaphore: Optional[asyncio.Semaphore] = None) -> str:
+    async def _request() -> str:
+        payload = {
+            "model": LLM_MODEL,
+            "prompt": _CATEGORY_PROMPT.format(description=description),
+            "stream": False,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=CATEGORY_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    LLM_URL,
+                    json=payload,
+                    headers={"Authorization": "Bearer runpod"},
+                )
+                response.raise_for_status()
+                return _standardize_category(response.json().get("response", ""))
+        except (httpx.TimeoutException, httpx.HTTPError, ValueError) as e:
+            logger.warning("[Stage3] AI categorization failed for '%s': %s", description[:80], e)
+            return "Other"
+
+    if semaphore:
+        async with semaphore:
+            return await _request()
+    return await _request()
+
+
+def _ai_categorize_sync(description: str) -> str:
+    payload = {
+        "model": LLM_MODEL,
+        "prompt": _CATEGORY_PROMPT.format(description=description),
+        "stream": False,
+    }
+    try:
+        with httpx.Client(timeout=CATEGORY_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                LLM_URL,
+                json=payload,
+                headers={"Authorization": "Bearer runpod"},
+            )
+            response.raise_for_status()
+            return _standardize_category(response.json().get("response", ""))
+    except (httpx.TimeoutException, httpx.HTTPError, ValueError) as e:
+        logger.warning("[Stage3] Sync AI categorization failed for '%s': %s", description[:80], e)
+        return "Other"
+
+
+async def categorize_transaction_async(
+    description: str,
+    semaphore: Optional[asyncio.Semaphore] = None,
+) -> str:
+    cleaned = clean_description(description)
+    category = _cached_or_rule_category(description, cleaned)
+    if not category:
+        category = await ai_categorize(cleaned or str(description or ""), semaphore=semaphore)
+        _store_category(description, cleaned, category)
+    return _standardize_category(category)
+
+
+def categorize_transaction(description: str) -> str:
+    cleaned = clean_description(description)
+    category = _cached_or_rule_category(description, cleaned)
+    if not category:
+        ai_input = cleaned or str(description or "")
+        try:
+            asyncio.get_running_loop()
+            category = _ai_categorize_sync(ai_input)
+        except RuntimeError:
+            category = asyncio.run(ai_categorize(ai_input))
+        _store_category(description, cleaned, category)
+    return _standardize_category(category)
 
 
 # ─────────────────────────────────────────────
@@ -81,7 +247,7 @@ def _tx_hash(date: str, amount: float, description: str, index: int, user_id: in
 # DATE PARSING — multi-format
 # ─────────────────────────────────────────────
 DATE_FORMATS = [
-    "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y",
+    "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y",
     "%d/%m/%y",  # DD/MM/YY — SBI, Axis short format
     "%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y",
     "%d-%b-%Y", "%d/%b/%Y", "%d %b %y", "%d-%b-%y",
@@ -96,6 +262,39 @@ def _parse_date(raw: str) -> Optional[datetime.datetime]:
         except ValueError:
             pass
     return None
+
+
+def is_valid_bill(description: str) -> bool:
+    keywords = ["electricity", "water", "rent", "gas", "internet", "mobile"]
+    desc = (description or "").lower()
+    return any(keyword in desc for keyword in keywords)
+
+
+def _normalize_bill_name(description: str) -> str:
+    desc = (description or "").strip()
+    compact = re.sub(r"\s+", " ", desc).lower()
+    replacements = {
+        "elec": "electricity",
+        "wifi": "internet",
+        "broadband": "internet",
+        "phone": "mobile",
+        "postpaid": "mobile",
+    }
+    for source, target in replacements.items():
+        compact = compact.replace(source, target)
+    if "electricity" in compact:
+        return "Electricity Bill"
+    if "water" in compact:
+        return "Water Bill"
+    if "rent" in compact:
+        return "Rent"
+    if "gas" in compact:
+        return "Gas Bill"
+    if "internet" in compact:
+        return "Internet Bill"
+    if "mobile" in compact:
+        return "Mobile Bill"
+    return desc[:255] or "Utility Bill"
 
 DATE_RE = re.compile(
     r"\b(\d{4}[-/]\d{2}[-/]\d{2}"          # YYYY-MM-DD / YYYY/MM/DD
@@ -219,8 +418,11 @@ def _table_row_to_tx(row, date_col, amt_col, debit_col, credit_col, type_col, de
     if amount == 0 or amount is None:
         return None
 
+    if not date_str:
+        return None
+
     return {
-        "date": date_str or datetime.datetime.utcnow().strftime("%Y-%m-%d"),
+        "date": date_str,
         "amount": amount,
         "type": tx_type or "debit",
         "description": description or "Bank Transaction",
@@ -416,8 +618,11 @@ def _row_from_match(m: re.Match, line: str) -> Optional[Dict]:
     if fields < MIN_VALID_FIELDS:
         return None
 
+    if not date_str:
+        return None
+
     return {
-        "date":        date_str or datetime.datetime.utcnow().strftime("%Y-%m-%d"),
+        "date":        date_str,
         "amount":      amount,
         "type":        tx_type or "debit",
         "description": description or "Bank Transaction",
@@ -461,61 +666,56 @@ def _extract_from_text(text: str) -> List[Dict]:
 
 
 # ─────────────────────────────────────────────
-# STAGE 3 — LLM CATEGORIZATION (NOT extraction)
+# STAGE 3 — HYBRID CATEGORIZATION (rules → cache → AI fallback)
 # ─────────────────────────────────────────────
-def _llm_categorize(transactions: List[Dict]) -> List[Dict]:
-    """Stage 3: Use LLM only for categorization of already-extracted transactions."""
+async def _categorize_transactions_async(transactions: List[Dict]) -> List[Dict]:
+    """Stage 3: fast rules first, cached reuse second, AI only for unknowns."""
     if not transactions:
         return transactions
 
-    # First apply keyword rules (free, fast)
-    uncategorized = []
-    for tx in transactions:
-        cat = _keyword_category(tx.get("description", ""))
-        if cat:
-            tx["category"] = cat
-        else:
-            uncategorized.append(tx)
+    semaphore = asyncio.Semaphore(max(1, CATEGORY_CONCURRENCY))
+    categories = await asyncio.gather(
+        *[
+            categorize_transaction_async(tx.get("description", ""), semaphore=semaphore)
+            for tx in transactions
+        ]
+    )
+    for tx, category in zip(transactions, categories):
+        tx["category"] = category
 
-    if not uncategorized:
-        logger.info("[Stage3] All transactions categorized via keyword rules — no LLM needed")
+    logger.info(
+        "[Stage3] Hybrid categorized %s transactions; cache_size=%s",
+        len(transactions),
+        len(CATEGORY_CACHE),
+    )
+    return transactions
+
+
+def _categorize_transactions_sync(transactions: List[Dict]) -> List[Dict]:
+    if not transactions:
         return transactions
 
-    # Build a compact prompt for remaining uncategorized ones
-    items = [
-        {"i": idx, "desc": tx.get("description", ""), "type": tx.get("type")}
-        for idx, tx in enumerate(transactions)
-        if tx.get("category") is None
-    ]
+    for tx in transactions:
+        tx["category"] = categorize_transaction(tx.get("description", ""))
 
-    prompt = f"""You are a financial data categorizer. Categorize each transaction into ONE of these categories:
-Food & Dining, Shopping, Travel, Subscriptions, Salary, EMI / Loans, Utilities, Rent / Housing, Healthcare, Cash, Investments, Tax, Insurance, Transfers, Miscellaneous.
+    logger.info(
+        "[Stage3] Hybrid categorized %s transactions synchronously; cache_size=%s",
+        len(transactions),
+        len(CATEGORY_CACHE),
+    )
+    return transactions
 
-Transactions (JSON):
-{json.dumps(items[:50])}
 
-Return ONLY a JSON array matching same indexes:
-[{{"i": <index>, "category": "<category>"}}]
-OUTPUT ONLY THE JSON ARRAY:"""
+def _llm_categorize(transactions: List[Dict]) -> List[Dict]:
+    """Backward-compatible entrypoint for Stage 3 categorization."""
+    if not transactions:
+        return transactions
 
     try:
-        content = call_llm(prompt, temperature=0.0)
-        start = content.find("[")
-        end = content.rfind("]") + 1
-        if start != -1:
-            cats = json.loads(content[start:end])
-            for item in cats:
-                idx = item.get("i")
-                if idx is not None and 0 <= idx < len(transactions):
-                    transactions[idx]["category"] = item.get("category", "Miscellaneous")
-        logger.info(f"[Stage3] LLM categorized {len(items)} transactions")
-    except Exception as e:
-        logger.warning(f"[Stage3] LLM categorization failed ({e}) — using 'Miscellaneous'")
-        for tx in transactions:
-            if not tx.get("category"):
-                tx["category"] = "Miscellaneous"
-
-    return transactions
+        asyncio.get_running_loop()
+        return _categorize_transactions_sync(transactions)
+    except RuntimeError:
+        return asyncio.run(_categorize_transactions_async(transactions))
 
 
 # ─────────────────────────────────────────────
@@ -593,10 +793,46 @@ def _normalize_tx(tx: Dict) -> Optional[Dict]:
             "amount": abs(amt),
             "type": tx_type,
             "description": desc or "Bank Transaction",
-            "category": tx.get("category") or "Miscellaneous",
+            "category": _standardize_category(tx.get("category") or "Other"),
         }
     except Exception:
         return None
+
+
+async def extract_bank_transactions_async(file_path: str, filename: str) -> Tuple[List[Dict], Dict]:
+    """Async extraction path for API handlers that can await AI categorization."""
+    doc = parse_document(file_path, filename)
+    text = doc.get("text", "")
+    tables = doc.get("tables", [])
+    method = doc.get("method", "unknown")
+
+    stage1_txs = _extract_from_tables(tables)
+    stage2_txs = _extract_from_text(text) if len(stage1_txs) == 0 else []
+    transactions = stage1_txs + stage2_txs
+    fallback_triggered = False
+
+    if not transactions:
+        fallback_triggered = True
+        transactions = _llm_extract_fallback(text)
+
+    if transactions:
+        transactions = await _categorize_transactions_async(transactions)
+
+    normalized = []
+    for tx in transactions:
+        norm = _normalize_tx(tx)
+        if norm:
+            normalized.append(norm)
+
+    metadata = {
+        "text": text,
+        "tables_count": len(tables),
+        "method": method,
+        "raw_count": len(transactions),
+        "valid_count": len(normalized),
+        "fallback_triggered": fallback_triggered,
+    }
+    return normalized, metadata
 
 
 def extract_bank_transactions(file_path: str, filename: str) -> Tuple[List[Dict], Dict]:
@@ -638,13 +874,13 @@ def extract_bank_transactions(file_path: str, filename: str) -> Tuple[List[Dict]
 def transaction_to_semantic_text(tx: Dict) -> str:
     """Convert one structured transaction into the only text we embed for tx RAG."""
     amount = float(tx.get("amount", 0.0))
-    category = tx.get("category") or "Miscellaneous"
+    category = _standardize_category(tx.get("category") or "Other")
     description = tx.get("description") or "Bank Transaction"
     date = tx.get("date_str") or tx.get("date")
     tx_type = tx.get("type", "debit")
 
     if tx_type == "credit":
-        if category == "Salary":
+        if any(term in description.lower() for term in ("salary", "payroll", "employer")):
             return f"Received ₹{amount:g} salary on {date}"
         return f"Received ₹{amount:g} for {description} ({category}) on {date}"
     return f"Spent ₹{amount:g} on {description} ({category}) on {date}"
@@ -664,7 +900,7 @@ def build_transaction_payloads(transactions: List[Dict], filename: str, user_id:
         )
         payload = {
             "amount": tx["amount"],
-            "category": tx.get("category") or "Miscellaneous",
+            "category": _standardize_category(tx.get("category") or "Other"),
             "date": tx["date_str"],
             "description": tx["description"],
             "type": tx.get("type", "debit"),
@@ -688,7 +924,7 @@ def build_financial_insights(transactions: List[Dict], user_id: Optional[int] = 
 
     category_totals: Dict[str, float] = {}
     for tx in debits:
-        category = tx.get("category") or "Miscellaneous"
+        category = _standardize_category(tx.get("category") or "Other")
         category_totals[category] = category_totals.get(category, 0.0) + float(tx.get("amount", 0.0))
 
     insights: List[Tuple[str, Dict]] = []
@@ -801,17 +1037,27 @@ def _save_transactions(db: Session, user_id: int, transactions: List[Dict]) -> T
         saved += 1
 
         # Detect Bills
-        if norm["category"] in ("Utilities", "Rent / Housing", "Subscriptions") or "subscription" in norm["description"].lower():
-            db.add(Bill(
-                user_id=user_id,
-                name=norm["description"][:255],
-                amount=norm["amount"],
-                due_date=norm["date"] + datetime.timedelta(days=30),
-                status="paid"
-            ))
+        if (
+            norm["category"] in ("Utilities", "Bills")
+            and is_valid_bill(norm["description"])
+        ):
+            normalized_name = _normalize_bill_name(norm["description"])
+            existing_bill = db.query(Bill).filter(
+                Bill.user_id == user_id,
+                Bill.name == normalized_name,
+            ).first()
+            if not existing_bill:
+                db.add(Bill(
+                    user_id=user_id,
+                    name=normalized_name,
+                    amount=norm["amount"],
+                    due_date=norm["date"] + datetime.timedelta(days=30),
+                    status="paid"
+                ))
 
         # Detect Loans
-        if norm["category"] == "EMI / Loans" or "emi" in norm["description"].lower():
+        loan_desc = norm["description"].lower()
+        if (norm["category"] == "Bills" and any(term in loan_desc for term in ("emi", "loan"))) or "emi" in loan_desc:
             db.add(Loan(
                 user_id=user_id,
                 loan_type="Detected Loan",
@@ -834,19 +1080,27 @@ def _build_summary(db: Session, user, raw_txs: List[Dict]) -> None:
     credits = [tx["amount"] for tx in raw_txs if tx.get("type") == "credit"]
     debits  = [tx["amount"] for tx in raw_txs if tx.get("type") == "debit"]
 
+    def _desc_has(tx: Dict, terms: Tuple[str, ...]) -> bool:
+        desc = str(tx.get("description", "") or "").lower()
+        return any(term in desc for term in terms)
+
     monthly_income = sum(
         tx["amount"] for tx in raw_txs
-        if tx.get("type") == "credit" and tx.get("category") == "Salary"
+        if tx.get("type") == "credit"
+        and (tx.get("category") == "Salary" or _desc_has(tx, ("salary", "payroll", "employer")))
     )
     monthly_spend   = sum(debits)
     total_balance   = sum(credits) - sum(debits)
-    emi_total       = sum(tx["amount"] for tx in raw_txs if tx.get("category") == "EMI / Loans")
+    emi_total       = sum(
+        tx["amount"] for tx in raw_txs
+        if tx.get("category") == "EMI / Loans" or _desc_has(tx, ("emi", "loan"))
+    )
     savings         = max(0.0, total_balance * 0.2)
 
     # Category distribution
     cat_dist: Dict[str, float] = {}
     for tx in raw_txs:
-        cat = tx.get("category", "Miscellaneous")
+        cat = _standardize_category(tx.get("category", "Other"))
         cat_dist[cat] = cat_dist.get(cat, 0.0) + tx.get("amount", 0.0)
 
     user.monthly_income = monthly_income
@@ -964,7 +1218,7 @@ def data_activation_pipeline(db: Session, external_id: str, file_path: str, file
         combined = _llm_extract_fallback(text)
         logger.info(f"[Pipeline] Stage 4 result: {len(combined)} transactions")
 
-    # ── Stage 3: LLM Categorization ──────────
+    # ── Stage 3: Hybrid Categorization ───────
     if combined:
         _update(65, "Stage 3: Categorizing transactions...")
         combined = _llm_categorize(combined)

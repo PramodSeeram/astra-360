@@ -40,9 +40,14 @@ def dashboard_home(user_id: str = Query(..., description="User ID"), db: Session
 
 
 @router.get("/bills")
-def dashboard_bills(user_id: str = Query(..., description="User ID"), db: Session = Depends(get_db)):
+def dashboard_bills(
+    user_id: str = Query(..., description="User ID"),
+    year: int | None = Query(None, ge=2000, le=2100, description="Bills year"),
+    month: int | None = Query(None, ge=1, le=12, description="Bills month (1-12)"),
+    db: Session = Depends(get_db),
+):
     uid = _validate_user_id(user_id)
-    result = get_bills_data(db, uid)
+    result = get_bills_data(db, uid, year=year, month=month)
     if result is None:
         _user_not_found()
     return result
@@ -58,9 +63,14 @@ def dashboard_cards(user_id: str = Query(..., description="User ID"), db: Sessio
 
 
 @router.get("/calendar")
-def dashboard_calendar(user_id: str = Query(..., description="User ID"), db: Session = Depends(get_db)):
+def dashboard_calendar(
+    user_id: str = Query(..., description="User ID"),
+    year: int = Query(..., ge=2000, le=2100, description="Calendar year"),
+    month: int = Query(..., ge=1, le=12, description="Calendar month (1-12)"),
+    db: Session = Depends(get_db),
+):
     uid = _validate_user_id(user_id)
-    result = get_calendar_data(db, uid)
+    result = get_calendar_data(db, uid, year=year, month=month)
     if result is None:
         _user_not_found()
     return result

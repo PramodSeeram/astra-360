@@ -20,6 +20,8 @@ class User(Base):
     cards = relationship("Card", back_populates="user", cascade="all, delete-orphan")
     loans = relationship("Loan", back_populates="user", cascade="all, delete-orphan")
     bills = relationship("Bill", back_populates="user", cascade="all, delete-orphan")
+    credit_accounts = relationship("CreditAccount", back_populates="user", cascade="all, delete-orphan")
+    subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
     chat_threads = relationship("ChatThread", back_populates="user", cascade="all, delete-orphan")
     financial_summary = relationship("UserFinancialSummary", back_populates="user", uselist=False, cascade="all, delete-orphan")
     processing_status = relationship("UserProcessingStatus", back_populates="user", uselist=False, cascade="all, delete-orphan")
@@ -76,6 +78,32 @@ class Bill(Base):
     status = Column(String(50), nullable=False) # paid, unpaid, pending
 
     user = relationship("User", back_populates="bills")
+
+class CreditAccount(Base):
+    __tablename__ = "credit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    provider = Column(String(100), nullable=False, default="Credit Line")
+    credit_limit = Column(Float, nullable=False, default=0.0)
+    used_amount = Column(Float, nullable=False, default=0.0)
+    last_updated = Column(DateTime, default=datetime.datetime.utcnow)
+
+    user = relationship("User", back_populates="credit_accounts")
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    amount = Column(Float, nullable=False)
+    billing_cycle = Column(String(50), default="monthly")
+    status = Column(String(50), default="active")
+    next_billing_date = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="subscriptions")
 
 class ChatThread(Base):
     __tablename__ = "chat_threads"

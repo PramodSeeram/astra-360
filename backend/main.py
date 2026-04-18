@@ -19,6 +19,7 @@ from routes.rag_routes import router as rag_router
 from routes.chat_routes import router as chat_router
 from routes.insurance_routes import router as insurance_router
 from routes.data import router as data_router
+from routes.dev import router as dev_router
 
 
 app = FastAPI(title="Astra 360 Backend", version="2.0.0")
@@ -39,6 +40,7 @@ app.include_router(rag_router)
 app.include_router(chat_router)
 app.include_router(insurance_router)
 app.include_router(data_router)
+app.include_router(dev_router)
 
 
 @app.get("/")

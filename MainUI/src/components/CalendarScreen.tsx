@@ -67,13 +67,15 @@ const CalendarScreen = () => {
       return;
     }
 
-    api.getCalendar(userId)
+    setLoading(true);
+    api.getCalendar(userId, year, month + 1)
       .then((res) => setData(res))
       .catch((err) => console.error("[CalendarScreen] API error:", err))
       .finally(() => setLoading(false));
-  }, []);
+  }, [year, month]);
 
   const events: CalendarEvent[] = data?.events ?? [];
+  const totalMonthSpend = data?.total_month_spend ?? 0;
 
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfMonth(year, month);
@@ -174,6 +176,22 @@ const CalendarScreen = () => {
         >
           <ChevronRight size={16} className="text-gray-400" />
         </button>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.08 }}
+        className="rounded-2xl bg-[#1E1E1E] border border-white/5 px-4 py-3 mb-5 flex items-center justify-between"
+      >
+        <div>
+          <p className="text-[10px] uppercase tracking-widest text-gray-500">Monthly Spend</p>
+          <p className="font-display text-xl font-bold text-white">₹{totalMonthSpend.toLocaleString("en-IN")}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] uppercase tracking-widest text-gray-500">Selected Month</p>
+          <p className="text-sm text-gray-300">{data?.month || `${MONTH_NAMES[month]} ${year}`}</p>
+        </div>
       </motion.div>
 
       {/* Calendar Grid */}

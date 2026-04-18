@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from app_schemas.schemas import SendOtpRequest, SendOtpResponse, VerifyOtpRequest, VerifyOtpResponse, DemoLoginRequest, DemoLoginResponse
 from services.otp_service import generate_otp, verify_otp
 from services.user_service import create_or_get_user
@@ -12,11 +12,13 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/send-otp", response_model=SendOtpResponse)
-def send_otp(req: SendOtpRequest):
+def send_otp(req: SendOtpRequest, background_tasks: BackgroundTasks):
     if not validate_phone(req.phone):
         raise HTTPException(status_code=400, detail="Invalid phone number. Must be 10 digits starting with 6-9.")
 
-    result = generate_otp(req.phone)
+    # We still want the OTP to return dev_otp immediately for dev purposes, 
+    # but the REAL sending can happen in background.
+    result = generate_otp(req.phone, background_tasks=background_tasks)
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])

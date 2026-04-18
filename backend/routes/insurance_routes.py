@@ -4,7 +4,7 @@ from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
 from models import get_user_by_external_id
-from agents.wealth_agent import client, LLM_MODEL
+from agents.wealth_agent import call_llm, LLM_MODEL
 from services.context_builder import build_user_context
 import json
 
@@ -62,13 +62,7 @@ async def analyze_insurance_image(
         }}
         """
 
-        completion = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
-        )
-        
-        analysis_result = completion.choices[0].message.content
+        analysis_result = call_llm(prompt, temperature=0.2)
         start = analysis_result.find('{')
         end = analysis_result.rfind('}') + 1
         if start != -1 and end != -1:
