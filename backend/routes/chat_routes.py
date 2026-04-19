@@ -1,4 +1,5 @@
 import logging
+import random as _random
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
 from database import SessionLocal, get_db
@@ -140,6 +141,30 @@ def _handle_card_recommendation(
         },
     )
 
+_WELCOME_SUGGESTIONS = [
+    "Where is my money going?",
+    "Plan my budget",
+    "How can I save more?",
+    "Best credit card for me",
+    "Am I saving enough?",
+    "What are my subscriptions?",
+    "How much is my rent?",
+]
+
+
+@router.get("/welcome")
+def get_welcome(user_id: str, db: Session = Depends(get_db)):
+    """Return a personalised greeting + suggestion chips for the empty chat state."""
+    user = get_user_by_external_id(db, user_id)
+    name = (getattr(user, "name", None) or "").strip() or "there"
+    first = name.split()[0]
+    return {
+        "message": f"Welcome {first} \U0001f44b",
+        "subheading": "Here are a few things you can try:",
+        "suggestions": _random.sample(_WELCOME_SUGGESTIONS, 4),
+    }
+
+
 @router.post("", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
     """
@@ -167,8 +192,12 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
         # 1.5 — Hybrid Decision Engine: deterministic card recommendation.
         # This intercepts the request BEFORE the LLM pipeline so the LLM
         # never makes the card choice — it only expands the explanation.
+        # Skip entirely when the query is clearly about fraud/scam/OTP — those
+        # must always reach scam_agent, not the card engine.
+        _FRAUD_PASSTHROUGH = frozenset({"otp", "scam", "fraud", "suspicious", "phishing", "hack", "safe", "verify"})
+        _is_fraud_query = any(kw in request.message.lower() for kw in _FRAUD_PASSTHROUGH)
         card_response = None
-        if not _compound_card_and_finance_query(request.message):
+        if not _is_fraud_query and not _compound_card_and_finance_query(request.message):
             card_response = _handle_card_recommendation(
                 request.message, thread.id, thread.title
             )

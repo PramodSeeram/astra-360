@@ -72,6 +72,7 @@ def run_multi_agent_service(
 
     # We can list all agents that were run for the UI trace
     agents_run = state.get("agents_to_run") or []
+    agents_used = state.get("agents_used") or agents_run or ["default_agent"]
     primary_agent = agents_run[0] if agents_run else "default_agent"
 
     logger.info(
@@ -90,6 +91,8 @@ def run_multi_agent_service(
         route=route,
         data={
             "agentic": True,
+            "agent_used": primary_agent,
+            "agents_used": agents_used,
             "agents_run": agents_run,
             "agent_trace": state.get("agent_trace", []),
             "derived_data": state.get("derived_data", {}),

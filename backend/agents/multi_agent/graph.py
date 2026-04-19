@@ -14,6 +14,7 @@ from .nodes import (
     teller_node,
     claims_node,
     scam_node,
+    billing_node,
     synthesizer_node,
     default_node,
 )
@@ -24,7 +25,7 @@ from langgraph.types import Send
 
 # Nodes that participate in parallel fan-out (must match add_conditional_edges map).
 _PARALLEL_AGENT_NODES = frozenset(
-    {"spending_agent", "budget_agent", "wealth_agent", "teller_agent", "claims_agent", "scam_agent"},
+    {"spending_agent", "budget_agent", "wealth_agent", "teller_agent", "claims_agent", "scam_agent", "billing_agent"},
 )
 
 
@@ -39,6 +40,7 @@ def build_multi_agent_graph(db: Session, user: User):
     workflow.add_node("teller_agent", lambda state: teller_node(state, db, user))
     workflow.add_node("claims_agent", lambda state: claims_node(state, db, user))
     workflow.add_node("scam_agent", lambda state: scam_node(state, db, user))
+    workflow.add_node("billing_agent", lambda state: billing_node(state, db, user))
     workflow.add_node("synthesizer", lambda state: synthesizer_node(state, db, user))
     workflow.add_node("default_agent", lambda state: default_node(state, db, user))
 
@@ -71,6 +73,7 @@ def build_multi_agent_graph(db: Session, user: User):
             "teller_agent": "teller_agent",
             "claims_agent": "claims_agent",
             "scam_agent": "scam_agent",
+            "billing_agent": "billing_agent",
             "default_agent": "default_agent",
         }
     )
@@ -83,6 +86,7 @@ def build_multi_agent_graph(db: Session, user: User):
     workflow.add_edge("teller_agent", "synthesizer")
     workflow.add_edge("claims_agent", "synthesizer")
     workflow.add_edge("scam_agent", "synthesizer")
+    workflow.add_edge("billing_agent", "synthesizer")
 
     # Final Step
     workflow.add_edge("synthesizer", END)

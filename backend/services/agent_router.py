@@ -98,6 +98,16 @@ _ROUTING_TABLE: List[Tuple[str, str, Tuple[str, ...]]] = [
 
 
 def _route_money_query(text: str) -> AgentRoute | None:
+    bank_compare_tokens = ("sbi", "federal", "hdfc", "icici", "axis", "kotak", "amex")
+    if any(token in text for token in bank_compare_tokens) and any(
+        token in text for token in (" or ", " vs ", "versus", "better", "best", "which")
+    ):
+        return AgentRoute(
+            agent="wealth_agent",
+            category="wealth",
+            confidence=0.9,
+            reason="bank_card_comparison_query",
+        )
     if "insurance" in text or "policy" in text:
         return AgentRoute(
             agent="claims_agent",

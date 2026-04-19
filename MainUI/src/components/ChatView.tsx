@@ -8,6 +8,7 @@ interface Message {
   role: "user" | "ai";
   text: string;
   agentUsed?: string;
+  agentsUsed?: string[];
 }
 
 interface Props {
@@ -18,8 +19,35 @@ interface Props {
 
 function formatAgentLabel(agent?: string): string {
   if (!agent?.trim()) return "";
+  const map: Record<string, string> = {
+    spending_agent: "Spending",
+    budget_agent: "Budget",
+    wealth_agent: "Card & Credit",
+    teller_agent: "Account",
+    scam_agent: "Fraud & Security",
+    claims_agent: "Insurance",
+    billing_agent: "Bills & Subscriptions",
+    default_agent: "General",
+  };
+  const mapped = map[agent.trim().toLowerCase()];
+  if (mapped) return mapped;
   const words = agent.replace(/_/g, " ").trim().split(/\s+/);
   return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+}
+
+function formatAgentBadge(agentsUsed?: string[], agentUsed?: string): string {
+  const normalized = (agentsUsed || [])
+    .map((agent) => formatAgentLabel(agent))
+    .filter((label) => label.length > 0);
+  if (normalized.length > 0) return `🧠 ${normalized.join(" • ")}`;
+  const single = formatAgentLabel(agentUsed);
+  return single ? `🧠 ${single}` : "";
+}
+
+interface WelcomeData {
+  message: string;
+  subheading: string;
+  suggestions: string[];
 }
 
 const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
@@ -31,6 +59,7 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [agentHint, setAgentHint] = useState(initialAgent);
+  const [welcomeData, setWelcomeData] = useState<WelcomeData | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const initSent = useRef(false);
 
@@ -75,6 +104,13 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
   useEffect(() => {
     setAgentHint(initialAgent);
   }, [initialAgent]);
+
+  useEffect(() => {
+    if (!userId) return;
+    api.getWelcome(userId)
+      .then(setWelcomeData)
+      .catch(() => {/* welcome is best-effort */});
+  }, [userId]);
 
   useEffect(() => {
     loadThreads().catch((error) => {
@@ -138,6 +174,7 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
           role: "ai",
           text: data.response,
           agentUsed: data.data?.agent_used,
+          agentsUsed: data.data?.agents_used,
         },
       ]);
 
@@ -277,9 +314,9 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
                       : "bg-card border border-border/30 rounded-bl-md"
                   }`}
                 >
-                  {msg.role === "ai" && msg.agentUsed ? (
+                  {msg.role === "ai" && formatAgentBadge(msg.agentsUsed, msg.agentUsed) ? (
                     <div className="mb-2 inline-flex rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium tracking-wide text-primary">
-                      {formatAgentLabel(msg.agentUsed)}
+                      {formatAgentBadge(msg.agentsUsed, msg.agentUsed)}
                     </div>
                   ) : null}
                   <p className="whitespace-pre-wrap break-words">{typeof msg.text === "string" ? msg.text : ""}</p>
@@ -290,8 +327,28 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
         )}
 
         {!loadingHistory && messages.length === 0 && !typing && (
-          <div className="rounded-2xl bg-card border border-border/30 px-4 py-5 text-sm text-muted-foreground">
-            Ask about spending, bills, budgeting, fraud, insurance, or credit and this thread will be saved automatically.
+          <div className="rounded-2xl bg-card border border-border/30 px-4 py-5">
+            {welcomeData ? (
+              <>
+                <p className="text-sm font-semibold text-foreground mb-0.5">{welcomeData.message}</p>
+                <p className="text-xs text-muted-foreground mb-3">{welcomeData.subheading}</p>
+                <div className="flex flex-col gap-2">
+                  {welcomeData.suggestions.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => handleSend(s)}
+                      className="text-left text-xs rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-primary hover:bg-primary/10 transition-colors"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Ask about spending, bills, budgeting, fraud, insurance, or credit and this thread will be saved automatically.
+              </p>
+            )}
           </div>
         )}
 

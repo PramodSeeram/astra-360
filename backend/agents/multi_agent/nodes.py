@@ -26,6 +26,7 @@ from .prompts import (
     CLAIMS_AGENT_PROMPT,
     LLM_REWRITE_PROMPT,
 )
+from services.billing_engine import compute_billing
 from .state import AgentTraceEntry, AstraAgentState
 from services.chat_tools import (
     tool_get_financial_summary,
@@ -41,6 +42,7 @@ VALID_AGENTS = {
     "claims_agent",
     "spending_agent",
     "budget_agent",
+    "billing_agent",
     "default_agent",
 }
 
@@ -56,6 +58,41 @@ def _normalize_merchant_key(description: Optional[str]) -> str:
     line = (description or "").strip().split("\n")[0].strip()
     line = re.sub(r"\s+", " ", line)
     return line.lower()[:120] if line else "unknown"
+
+
+def _sanitize_raw_answer_text(raw_answer_text: str, *, drop_suspicious_tail: bool = True) -> str:
+    cleaned = (raw_answer_text or "").strip()
+    cleaned = re.sub(r"(?m)^#+\s*", "", cleaned)
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and drop_suspicious_tail:
+        tail = lines[-1].strip()
+        if (
+            0 < len(tail.split()) <= 2
+            and not re.search(r"[.!?₹0-9]", tail)
+            and len(tail) < 20
+        ):
+            lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _remove_markdown_formatting(text: str) -> str:
+    """Strip markdown bold, italic, underline, stray symbols, and heading markers."""
+    if not text:
+        return ""
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)   # bold
+    text = re.sub(r"\*(.*?)\*", r"\1", text)         # italic
+    text = re.sub(r"__(.*?)__", r"\1", text)          # underline
+    text = re.sub(r"(?m)^#+\s*", "", text)            # headings
+    text = text.replace("**", "").replace("*", "")   # stray asterisks
+    # preserve underscores in words (e.g. variable_names); only strip isolated _
+    text = re.sub(r"(?<!\w)_(?!\w)", "", text)
+    return text.strip()
+
+
+def _extract_rupee_amounts(text: str) -> set[str]:
+    return set(re.findall(r"₹\s?[\d,]+(?:\.\d+)?", text or ""))
 
 
 def _is_spending_query(message: str) -> bool:
@@ -101,6 +138,8 @@ def _has_narrow_wealth_intent(message: str) -> bool:
     m = (message or "").lower()
     if "cibil" in m or "credit score" in m:
         return True
+    if _has_bank_card_comparison_intent(message):
+        return True
     if (
         "which card" in m
         or "best card" in m
@@ -112,6 +151,19 @@ def _has_narrow_wealth_intent(message: str) -> bool:
     ):
         return True
     return False
+
+
+def _has_bank_card_comparison_intent(message: str) -> bool:
+    m = (message or "").lower()
+    bank_tokens = ("sbi", "federal", "hdfc", "icici", "axis", "kotak", "amex")
+    compare_tokens = (" or ", " vs ", "versus", "better", "best", "which", "compare", "between")
+    bank_hits = sum(1 for token in bank_tokens if token in m)
+    has_bank = bank_hits > 0
+    has_compare = any(token in m for token in compare_tokens)
+    if bank_hits >= 2 and " and " in m:
+        has_compare = True
+    has_card_cue = any(token in m for token in ("card", "credit", "cashback", "rewards", "benefit"))
+    return has_bank and (has_compare or has_card_cue)
 
 
 def _is_budget_query(message: str) -> bool:
@@ -140,6 +192,17 @@ def _is_teller_query(message: str) -> bool:
     return False
 
 
+def _is_billing_query(message: str) -> bool:
+    m = (message or "").lower()
+    billing_keys = (
+        "netflix", "spotify", "prime", "subscription", "subscriptions",
+        "rent", "electricity", "wifi", "jio", "airtel", "broadband",
+        "bill", "bills", "recharge", "utility", "utilities",
+        "hotstar", "disney", "zee5", "gas bill", "water bill",
+    )
+    return any(k in m for k in billing_keys)
+
+
 _MIN_ACTIONABLE_AMOUNT = 500.0   # below this, skip "trim X%" nudges
 _STRONG_SAVINGS_RATE = 30        # above this %, user is doing well — praise, don't push
 
@@ -161,13 +224,13 @@ def _build_savings_insight(computed: Dict[str, Any]) -> str:
         if top_amt >= _MIN_ACTIONABLE_AMOUNT:
             saving_20 = top_amt * 0.2
             tips.append(
-                f"**{top_name}** is your biggest spend — {_format_inr(top_amt)} ({top_pct}% of expenses). "
+                f"{top_name} is your biggest spend — {_format_inr(top_amt)} ({top_pct}% of expenses). "
                 f"Cutting it by 20% frees up {_format_inr(saving_20)}/month."
             )
         else:
             tips.append(
                 f"Your spending is distributed across small categories. "
-                f"Based on your recent transactions, **{top_name}** is the largest at {_format_inr(top_amt)}."
+                f"Based on your recent transactions, {top_name} is the largest at {_format_inr(top_amt)}."
             )
 
         food_cats = {"Food", "Food & Dining", "Food Delivery"}
@@ -203,10 +266,10 @@ def _build_savings_insight(computed: Dict[str, Any]) -> str:
     # --- fallback when data is thin ---
     if not tips:
         return (
-            "\n\n**How to save more:**\n"
+            "\n\nHow to save more:\n"
             "- Based on your recent transactions, upload a full statement to get specific category-level savings targets."
         )
-    return "\n\n**How to save more:**\n" + "\n".join(f"- {t}" for t in tips)
+    return "\n\nHow to save more:\n" + "\n".join(f"- {t}" for t in tips)
 
 
 def _build_budget_answer(computed: Dict[str, Any], user_message: str = "") -> str:
@@ -214,28 +277,28 @@ def _build_budget_answer(computed: Dict[str, Any], user_message: str = "") -> st
         return INSUFFICIENT_DATA
     hm = computed.get("headline_month") or "latest month"
     lines = [
-        f"**Budget snapshot · {hm}** (from your bank transactions)",
+        f"Budget snapshot for {hm} (from your bank transactions)",
         f"- Estimated monthly income: {_format_inr(float(computed.get('income') or 0.0))}",
         f"- Expenses (debits in month): {_format_inr(float(computed.get('expenses') or 0.0))}",
-        f"- Savings (income − expenses): {_format_inr(float(computed.get('savings') or 0.0))}",
+        f"- Savings (income minus expenses): {_format_inr(float(computed.get('savings') or 0.0))}",
         f"- Latest statement balance: {_format_inr(float(computed.get('total_balance') or 0.0))}",
         "",
     ]
     if computed.get("top_category"):
         lines.append(
-            f"- Top spend category: **{computed['top_category']}** "
+            f"- Top spend category: {computed['top_category']} "
             f"({_format_inr(float(computed.get('top_category_amount') or 0.0))})"
         )
     cats = computed.get("category_breakdown") or {}
     if cats:
         lines.append("")
-        lines.append("**Category breakdown (headline month)**")
+        lines.append("Category breakdown (headline month):")
         for name, amt in sorted(cats.items(), key=lambda x: -x[1])[:8]:
             lines.append(f"- {name}: {_format_inr(float(amt))}")
     by_month = computed.get("by_month") or []
     if len(by_month) > 1:
         lines.append("")
-        lines.append("**Recent months (salary vs expenses)**")
+        lines.append("Recent months (income vs expenses):")
         for row in by_month[-4:]:
             lines.append(
                 f"- {row.get('month', '?')}: income {_format_inr(float(row.get('salary') or 0))}, "
@@ -354,12 +417,12 @@ def _build_spending_answer(user_message: str, computed: Dict[str, Any]) -> str:
     windows = computed.get("windows") or []
     for wk in windows:
         mon = (computed.get("monthly") or {}).get(wk) or {}
-        lines.append(f"**{wk}**")
+        lines.append(f"{wk}")
         lines.append(f"- Total debits: {_format_inr(float(mon.get('total_debit') or 0.0))}")
         by_cat = mon.get("by_category") or {}
         if by_cat:
             top_c = max(by_cat.keys(), key=lambda c: by_cat[c])
-            lines.append(f"- Top category: **{top_c}** ({_format_inr(float(by_cat[top_c]))})")
+            lines.append(f"- Top category: {top_c} ({_format_inr(float(by_cat[top_c]))})")
         if float(mon.get("swiggy_total") or 0.0) > 0:
             lines.append(f"- Swiggy: {_format_inr(float(mon['swiggy_total']))}")
         if float(mon.get("zomato_total") or 0.0) > 0:
@@ -368,11 +431,11 @@ def _build_spending_answer(user_message: str, computed: Dict[str, Any]) -> str:
 
     if "swiggy" in msg_l:
         lines.append(
-            f"**Swiggy (selected period):** {_format_inr(float(computed.get('swiggy_total') or 0.0))}"
+            f"Swiggy (selected period): {_format_inr(float(computed.get('swiggy_total') or 0.0))}"
         )
     if "zomato" in msg_l:
         lines.append(
-            f"**Zomato (selected period):** {_format_inr(float(computed.get('zomato_total') or 0.0))}"
+            f"Zomato (selected period): {_format_inr(float(computed.get('zomato_total') or 0.0))}"
         )
 
     if len(windows) == 2:
@@ -382,7 +445,7 @@ def _build_spending_answer(user_message: str, computed: Dict[str, Any]) -> str:
         diff = t2 - t1
         trend = "increase" if diff > 0 else "decrease" if diff < 0 else "flat"
         lines.append(
-            f"**Compare {m1} → {m2}:** {_format_inr(t1)} vs {_format_inr(t2)} "
+            f"Compare {m1} to {m2}: {_format_inr(t1)} vs {_format_inr(t2)} "
             f"({trend}, {_format_inr(abs(diff))} difference)."
         )
 
@@ -405,12 +468,12 @@ def _build_spending_answer(user_message: str, computed: Dict[str, Any]) -> str:
                 total = float(mon.get("total_debit") or 1.0)
                 pct = round((top_amt / total) * 100) if total > 0 else 0
                 lines.append(
-                    f"**Insight:** {pct}% of your spending in {wk} went to **{top_c}** — "
-                    "that's your biggest lever if you want to cut back."
+                    f"{pct}% of your spending in {wk} went to {top_c} — "
+                    "that is your biggest lever if you want to cut back."
                 )
             else:
                 lines.append(
-                    f"**Insight:** Based on your recent transactions in {wk}, "
+                    f"Based on your recent transactions in {wk}, "
                     "upload a full statement to see a complete category breakdown."
                 )
 
@@ -468,6 +531,12 @@ def _append_trace(state: AstraAgentState, entry: AgentTraceEntry) -> List[AgentT
     return [entry]
 
 
+def _intent_hint(message: str, agent: str) -> str:
+    """Tiny hint passed to the synthesizer so the LLM (not the agent) writes the prose."""
+    snippet = (message or "").strip().replace("\n", " ")[:200]
+    return f"[{agent}] User asked: {snippet}"
+
+
 def _build_unified_context(
     user_query: str,
     data: Dict[str, Any],
@@ -513,56 +582,42 @@ def _render_prompt(template: str, user_message: str, input_json: Dict[str, Any])
 
 def supervisor_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentState:
     raw_message = state.get("message", "") or ""
-    message = raw_message.lower()
-    agents = set()
+    query = raw_message.lower()
+
     spending_hit = _is_spending_query(raw_message)
     budget_hit = _is_budget_query(raw_message)
+    billing_hit = _is_billing_query(raw_message)
+    fraud_hit = any(kw in query for kw in ["fraud", "scam", "suspicious", "otp", "safe"])
+    claims_hit = any(kw in query for kw in ["insurance", "policy", "premium", "lic", "claim"])
 
-    if any(kw in message for kw in ["insurance", "policy", "premium", "lic", "claim"]):
-        agents.add("claims_agent")
-    if spending_hit:
-        agents.add("spending_agent")
-    if budget_hit:
-        agents.add("budget_agent")
+    # ── PRIMARY selection: strict priority ladder ──────────────────────────────
+    if fraud_hit:
+        agents = ["scam_agent"]
+    elif billing_hit:
+        agents = ["billing_agent"]
+    elif spending_hit:
+        agents = ["spending_agent"]
+    elif budget_hit:
+        agents = ["budget_agent"]
+    elif _has_narrow_wealth_intent(raw_message) or _has_bank_card_comparison_intent(raw_message):
+        agents = ["wealth_agent"]
+    elif _is_teller_query(raw_message):
+        agents = ["teller_agent"]
+    elif claims_hit:
+        agents = ["claims_agent"]
+    else:
+        agents = ["budget_agent"]
 
-    if _has_narrow_wealth_intent(raw_message) or (
-        not spending_hit
-        and not budget_hit
-        and any(kw in message for kw in ["cibil", "credit", "score", "loan", "card"])
-    ):
-        agents.add("wealth_agent")
+    # ── SECONDARY: controlled multi-intent when "and" is explicitly in query ──
+    if "and" in query and len(agents) == 1 and agents[0] not in ("scam_agent",):
+        if spending_hit and budget_hit:
+            agents = ["spending_agent", "budget_agent"]
+        elif billing_hit and spending_hit:
+            agents = ["billing_agent", "spending_agent"]
+        elif claims_hit and agents[0] not in ("claims_agent",):
+            agents.append("claims_agent")
 
-    if _is_teller_query(raw_message) and not spending_hit:
-        agents.add("teller_agent")
-    if any(kw in message for kw in ["fraud", "scam", "suspicious", "otp"]):
-        agents.add("scam_agent")
-
-    if (
-        ("spending_agent" in agents or "budget_agent" in agents)
-        and not _has_narrow_wealth_intent(raw_message)
-    ):
-        agents.discard("wealth_agent")
-
-    prompt = _render_prompt(SUPERVISOR_ROUTER_PROMPT, state.get("message", ""), {})
-    try:
-        raw = call_llm(prompt, temperature=0.0)
-        parsed = extract_json_object(raw) or {}
-        for a in (parsed.get("agents") or []):
-            name = a.lower() if a else ""
-            if name in VALID_AGENTS:
-                agents.add(name)
-    except Exception:
-        pass
-
-    if (
-        ("spending_agent" in agents or "budget_agent" in agents)
-        and not _has_narrow_wealth_intent(raw_message)
-    ):
-        agents.discard("wealth_agent")
-
-    if not agents:
-        agents.add("default_agent")
-    agents_to_run = list(agents)
+    agents_to_run = agents
     logger.info("supervisor.agents_to_run=%s user_id=%s", agents_to_run, getattr(user, "id", None))
     derived = _compute_derived_signals(db, user)
 
@@ -570,7 +625,7 @@ def supervisor_node(state: AstraAgentState, db: Session, user: User) -> AstraAge
         "agents_to_run": agents_to_run,
         "agent_trace": _append_trace(state, {"step": "supervisor", "agent": "supervisor", "detail": f"parallel_intents: {agents_to_run}"}),
         "derived_data": derived,
-        "agent_responses": {}, 
+        "agent_responses": {},
     }
 
 
@@ -593,7 +648,7 @@ def budget_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentSt
         }
     else:
         structured = {
-            "answer": _build_budget_answer(computed, user_message),
+            "answer": _intent_hint(user_message, "budget_agent"),
             "deterministic": True,
             "confidence": 1.0,
             "computed": computed,
@@ -627,7 +682,7 @@ def spending_node(state: AstraAgentState, db: Session, user: User) -> AstraAgent
     else:
         computed = compute_spending(txs, windows)
         structured = {
-            "answer": _build_spending_answer(user_message, computed),
+            "answer": _intent_hint(user_message, "spending_agent"),
             "deterministic": True,
             "confidence": 1.0,
             "computed": computed,
@@ -645,13 +700,17 @@ def wealth_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentSt
     logger.info("multi_agent.node wealth_agent user_id=%s", getattr(user, "id", None))
     user_message = state.get("message", "")
     derived = state.get("derived_data") or {}
-    payload = {
+    computed = {
         "credit": get_credit_data(db, user),
-        "cards": {**get_card_data(db, user), "missed_savings": _analyze_card_missed_savings(db, user)}
+        "cards": {**get_card_data(db, user), "missed_savings": _analyze_card_missed_savings(db, user)},
+        "derived": derived,
     }
-    prompt = _render_prompt(WEALTH_AGENT_PROMPT, user_message, {"payload": payload, "derived": derived})
-    raw = call_llm(prompt)
-    structured = extract_json_object(raw) or {"answer": raw, "confidence": 0.7}
+    structured = {
+        "answer": _intent_hint(user_message, "wealth_agent"),
+        "deterministic": True,
+        "confidence": 1.0,
+        "computed": computed,
+    }
     return {
         "agent_responses": {"wealth_agent": structured},
         "agent_trace": _append_trace(state, {"step": "wealth_agent", "agent": "wealth_agent", "detail": "parallel_wealth_analysis"})
@@ -661,10 +720,16 @@ def wealth_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentSt
 def teller_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentState:
     logger.info("multi_agent.node teller_agent user_id=%s", getattr(user, "id", None))
     user_message = state.get("message", "")
-    payload = {"summary": tool_get_financial_summary(db, user), "recent": tool_get_recent_transactions(db, user, 10)}
-    prompt = _render_prompt(TELLER_AGENT_PROMPT, user_message, payload)
-    raw = call_llm(prompt)
-    structured = extract_json_object(raw) or {"answer": raw, "confidence": 0.9}
+    computed = {
+        "summary": tool_get_financial_summary(db, user),
+        "recent": tool_get_recent_transactions(db, user, 10),
+    }
+    structured = {
+        "answer": _intent_hint(user_message, "teller_agent"),
+        "deterministic": True,
+        "confidence": 1.0,
+        "computed": computed,
+    }
     return {
         "agent_responses": {"teller_agent": structured},
         "agent_trace": _append_trace(state, {"step": "teller_agent", "agent": "teller_agent", "detail": "parallel_teller_analysis"})
@@ -675,9 +740,13 @@ def claims_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentSt
     logger.info("multi_agent.node claims_agent user_id=%s", getattr(user, "id", None))
     user_message = state.get("message", "")
     derived = state.get("derived_data") or {}
-    prompt = _render_prompt(CLAIMS_AGENT_PROMPT, user_message, {"derived": derived})
-    raw = call_llm(prompt)
-    structured = extract_json_object(raw) or {"answer": raw, "confidence": 0.6}
+    computed = {"derived": derived}
+    structured = {
+        "answer": _intent_hint(user_message, "claims_agent"),
+        "deterministic": True,
+        "confidence": 0.8,
+        "computed": computed,
+    }
     return {
         "agent_responses": {"claims_agent": structured},
         "agent_trace": _append_trace(state, {"step": "claims_agent", "agent": "claims_agent", "detail": "parallel_claims_analysis"})
@@ -687,13 +756,137 @@ def claims_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentSt
 def scam_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentState:
     logger.info("multi_agent.node scam_agent user_id=%s", getattr(user, "id", None))
     user_message = state.get("message", "")
-    prompt = _render_prompt(SCAM_AGENT_PROMPT, user_message, {"signals": get_fraud_signals(db, user, user_message)})
-    raw = call_llm(prompt)
-    structured = extract_json_object(raw) or {"answer": raw, "confidence": 0.8}
+    computed = {"signals": get_fraud_signals(db, user, user_message)}
+    structured = {
+        "answer": _intent_hint(user_message, "scam_agent"),
+        "deterministic": True,
+        "confidence": 0.9,
+        "computed": computed,
+    }
     return {
         "agent_responses": {"scam_agent": structured},
         "agent_trace": _append_trace(state, {"step": "scam_agent", "agent": "scam_agent", "detail": "parallel_scam_analysis"})
     }
+
+
+def _billing_focused_answer(query: str, computed: Dict[str, Any]) -> str:
+    """Return a query-focused billing answer instead of always dumping everything."""
+    q = query.lower()
+    subs = computed.get("subscriptions") or {}
+    utilities = computed.get("utilities") or {}
+    connectivity = computed.get("connectivity") or {}
+    rent = float(computed.get("rent") or 0)
+    total = float(computed.get("total") or 0)
+
+    # --- rent questions ---
+    if "rent" in q:
+        if rent > 0:
+            return f"Your rent payments total {_format_inr(rent)} based on your recent transactions."
+        return "I don't see any rent payments in your recent transactions."
+
+    # --- wifi / internet / jio / airtel / broadband ---
+    if any(k in q for k in ("wifi", "broadband", "internet", "fiber", "jio", "airtel", "bsnl", "recharge", "sim")):
+        if connectivity:
+            lines = [f"{k}: {_format_inr(v)}" for k, v in connectivity.items()]
+            conn_total = sum(connectivity.values())
+            return f"Your connectivity / mobile bills:\n" + "\n".join(f"- {l}" for l in lines) + f"\n\nTotal: {_format_inr(conn_total)}"
+        return "I don't see any WiFi or mobile recharge payments in your recent transactions."
+
+    # --- electricity / power / utility ---
+    if any(k in q for k in ("electricity", "power", "water", "gas", "utility", "utilities", "bescom", "tneb")):
+        if utilities:
+            lines = [f"{k}: {_format_inr(v)}" for k, v in utilities.items()]
+            util_total = sum(utilities.values())
+            return "Your utility bills:\n" + "\n".join(f"- {l}" for l in lines) + f"\n\nTotal: {_format_inr(util_total)}"
+        return "I don't see any utility payments (electricity, water, gas) in your recent transactions."
+
+    # --- subscription / netflix / spotify / ott / cancel ---
+    if any(k in q for k in ("subscription", "subscriptions", "netflix", "spotify", "hotstar", "prime", "ott", "cancel", "stream")):
+        if subs:
+            lines = [f"{k}: {_format_inr(v)}" for k, v in subs.items()]
+            sub_total = sum(subs.values())
+            answer = "Your active subscriptions:\n" + "\n".join(f"- {l}" for l in lines) + f"\n\nTotal: {_format_inr(sub_total)}"
+            if "cancel" in q or "stop" in q:
+                answer += "\n\nIf you have overlapping OTT services, consolidating to one or two can save money."
+            return answer
+        return "I don't see any OTT or subscription payments in your recent transactions."
+
+    # --- full summary (default) ---
+    parts: List[str] = []
+    if subs:
+        parts.append("Subscriptions:\n" + "\n".join(f"- {k}: {_format_inr(v)}" for k, v in subs.items()))
+    if utilities:
+        parts.append("Utilities:\n" + "\n".join(f"- {k}: {_format_inr(v)}" for k, v in utilities.items()))
+    if connectivity:
+        parts.append("Connectivity:\n" + "\n".join(f"- {k}: {_format_inr(v)}" for k, v in connectivity.items()))
+    if rent > 0:
+        parts.append(f"Rent: {_format_inr(rent)}")
+
+    if not parts:
+        return "I don't see any recurring bills (subscriptions, utilities, rent, connectivity) in your recent transactions."
+
+    return "\n\n".join(parts) + f"\n\nTotal recurring bills: {_format_inr(total)}"
+
+
+def billing_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentState:
+    logger.info("multi_agent.node billing_agent user_id=%s", getattr(user, "id", None))
+    user_message = state.get("message", "")
+    txs = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == user.id)
+        .order_by(Transaction.date.asc(), Transaction.id.asc())
+        .all()
+    )
+    computed = compute_billing(txs)
+    has_data = float(computed.get("total") or 0) > 0
+    answer = _intent_hint(user_message, "billing_agent") if has_data else INSUFFICIENT_DATA
+    confidence = 1.0 if has_data else 0.4
+
+    structured = {
+        "answer": answer,
+        "deterministic": True,
+        "confidence": confidence,
+        "computed": computed,
+    }
+    return {
+        "agent_responses": {"billing_agent": structured},
+        "agent_trace": _append_trace(
+            state,
+            {"step": "billing_agent", "agent": "billing_agent", "detail": "deterministic_billing"},
+        ),
+    }
+
+
+def _deterministic_fallback(
+    user_message: str,
+    responses: Dict[str, Any],
+) -> str:
+    """Rebuild full-prose answers from each agent's `computed` payload.
+
+    Used only when the LLM is disabled, errors out, or fails the rupee guard,
+    so we never regress to a hint-only string for the user.
+    """
+    parts: List[str] = []
+    for agent, data in responses.items():
+        if not isinstance(data, dict):
+            continue
+        computed = data.get("computed") or {}
+        try:
+            if agent == "spending_agent" and computed:
+                parts.append(_build_spending_answer(user_message, computed))
+            elif agent == "budget_agent" and computed:
+                parts.append(_build_budget_answer(computed, user_message))
+            elif agent == "billing_agent" and computed:
+                parts.append(_billing_focused_answer(user_message, computed))
+            else:
+                ans = (data.get("answer") or "").strip()
+                # Skip hint stubs like "[spending_agent] User asked: ..."
+                if ans and not ans.startswith("["):
+                    parts.append(ans)
+        except Exception as exc:
+            logger.warning("deterministic fallback failed for %s: %s", agent, exc)
+    text = "\n\n".join(p for p in parts if p).strip()
+    return text or INSUFFICIENT_DATA
 
 
 def synthesizer_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentState:
@@ -706,68 +899,118 @@ def synthesizer_node(state: AstraAgentState, db: Session, user: User) -> AstraAg
     responses = state.get("agent_responses") or {}
     use_llm_rewrite = os.getenv("USE_LLM_REWRITE", "true").strip().lower() != "false"
 
-    _AGENT_LABELS: Dict[str, str] = {
-        "spending_agent": "Spending",
-        "budget_agent": "Budget",
-        "wealth_agent": "Card & Credit",
-        "teller_agent": "Account",
-        "scam_agent": "Fraud & Security",
-        "claims_agent": "Insurance",
-        "default_agent": "General",
-    }
-
-    # Build merged deterministic text and collect computed JSON from all agents.
-    raw_answer_parts: List[str] = []
+    # Collect computed JSON from every agent — this is now the authoritative
+    # input the synthesizer LLM uses to write the actual answer.
+    agents_used = list(responses.keys())
     computed_payload: Dict[str, Any] = {}
+    has_any_response = False
     for agent, data in responses.items():
         if not data:
             continue
-        ans = (data.get("answer") if isinstance(data, dict) else str(data) or "").strip()
-        if ans:
-            label = _AGENT_LABELS.get(agent, agent.replace("_", " ").title())
-            raw_answer_parts.append(f"[{label}]\n{ans}")
+        has_any_response = True
         if isinstance(data, dict) and data.get("computed"):
             computed_payload[agent] = data["computed"]
 
-    raw_answer_text = "\n\n".join(raw_answer_parts).strip() or INSUFFICIENT_DATA
-
-    # Short-circuit if toggle is off or there is nothing to rewrite.
-    if not use_llm_rewrite or not raw_answer_parts:
-        detail = "fast_path_env_disabled" if not use_llm_rewrite else "no_agent_responses"
-        logger.info(f"[TEST] Final answer: {raw_answer_text}")
+    # Short-circuit when there is nothing to work with.
+    if not has_any_response:
         return {
-            "final_answer": raw_answer_text,
+            "final_answer": INSUFFICIENT_DATA,
+            "agents_used": agents_used,
             "agent_trace": _append_trace(
                 state,
-                {"step": "synthesizer", "agent": "supervisor", "detail": detail},
+                {"step": "synthesizer", "agent": "supervisor", "detail": "no_agent_responses"},
             ),
         }
 
-    # Render the rewrite prompt with authoritative computed data.
+    # If the LLM rewrite path is disabled, fall back to deterministic prose
+    # built from the computed payload.
+    if not use_llm_rewrite:
+        final_answer = _sanitize_raw_answer_text(
+            _deterministic_fallback(user_message, responses)
+        ) or INSUFFICIENT_DATA
+        logger.info(f"[TEST] Final answer: {final_answer}")
+        return {
+            "final_answer": final_answer,
+            "agents_used": agents_used,
+            "agent_trace": _append_trace(
+                state,
+                {"step": "synthesizer", "agent": "supervisor", "detail": "fast_path_env_disabled"},
+            ),
+        }
+
+    # LLM-driven path: hand the LLM the user query + computed data and let it
+    # generate the final answer.
     prompt = (
         LLM_REWRITE_PROMPT
         .replace("{{USER_MESSAGE}}", user_message)
         .replace("{{COMPUTED_JSON}}", json.dumps(computed_payload, ensure_ascii=False, indent=2))
-        .replace("{{RAW_ANSWER}}", raw_answer_text)
     )
 
+    fallback_reason = ""
     try:
-        rewritten = call_llm(prompt, temperature=0.2)
+        rewritten = call_llm(prompt, temperature=0.4)
     except Exception as exc:
         logger.warning("synthesizer LLM rewrite failed, falling back to deterministic: %s", exc)
         rewritten = ""
+        fallback_reason = "llm_exception"
+
+    # Qualitative / analytical queries get a relaxed rupee guard (the LLM may
+    # legitimately focus on the most important numbers).
+    _QUALITATIVE_KEYS = (
+        "stable", "cut", "save", "cancel", "advice", "suggest", "should i",
+        "why", "how", "improve", "reduce", "tip", "what can", "compare",
+        "analysis", "overview", "trend",
+    )
+    _is_qualitative = any(k in user_message.lower() for k in _QUALITATIVE_KEYS)
 
     rewritten_clean = rewritten.strip()
-    if len(rewritten_clean) >= 10:
-        final_answer = rewritten_clean
-        trace_detail = "llm_rewrite"
-    else:
-        final_answer = raw_answer_text
+    if len(rewritten_clean) < 20:
+        fallback_reason = fallback_reason or "too_short"
+        final_answer = _deterministic_fallback(user_message, responses)
         trace_detail = "llm_rewrite_fallback"
+    else:
+        # Validate that every ₹ figure in the LLM output also exists in the
+        # computed payload — this catches hallucinated numbers.
+        computed_blob = json.dumps(computed_payload, ensure_ascii=False)
+        rupees_out = _extract_rupee_amounts(rewritten_clean)
+        rupees_allowed = _extract_rupee_amounts(computed_blob)
+
+        # Also accept bare numbers from computed (LLM may format ₹308000 as ₹308,000).
+        def _digits_only(s: str) -> str:
+            return re.sub(r"[^\d]", "", s)
+
+        allowed_digits = {_digits_only(r) for r in rupees_allowed}
+        # Pull every numeric token from the computed JSON as well.
+        for num in re.findall(r"\d[\d,]*(?:\.\d+)?", computed_blob):
+            allowed_digits.add(_digits_only(num))
+
+        invented = [r for r in rupees_out if _digits_only(r) and _digits_only(r) not in allowed_digits]
+
+        if invented and not _is_qualitative:
+            fallback_reason = fallback_reason or f"invented_rupees:{invented[:3]}"
+            final_answer = _deterministic_fallback(user_message, responses)
+            trace_detail = "llm_rewrite_fallback"
+        elif invented and _is_qualitative and len(invented) > max(1, len(rupees_out) // 2):
+            fallback_reason = fallback_reason or f"invented_rupees_qualitative:{invented[:3]}"
+            final_answer = _deterministic_fallback(user_message, responses)
+            trace_detail = "llm_rewrite_fallback"
+        else:
+            final_answer = rewritten_clean
+            trace_detail = "llm_rewrite"
+
+    if fallback_reason:
+        logger.info("[synthesizer] LLM fallback: %s", fallback_reason)
+
+    final_answer = _remove_markdown_formatting(final_answer)
+    if trace_detail == "llm_rewrite":
+        final_answer = _sanitize_raw_answer_text(final_answer, drop_suspicious_tail=False) or _deterministic_fallback(user_message, responses)
+    else:
+        final_answer = _sanitize_raw_answer_text(final_answer) or INSUFFICIENT_DATA
 
     logger.info(f"[TEST] Final answer: {final_answer}")
     return {
         "final_answer": final_answer,
+        "agents_used": agents_used,
         "agent_trace": _append_trace(
             state,
             {"step": "synthesizer", "agent": "supervisor", "detail": trace_detail},
@@ -784,5 +1027,6 @@ def default_node(state: AstraAgentState, db: Session, user: User) -> AstraAgentS
     logger.info(f"[TEST] Final answer: {final_answer}")
     return {
         "final_answer": final_answer,
+        "agents_used": ["default_agent"],
         "agent_trace": _append_trace(state, {"step": "default_agent", "agent": "default_agent", "detail": "unsupported_query"})
     }

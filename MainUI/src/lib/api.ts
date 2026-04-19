@@ -246,6 +246,7 @@ export interface ChatResponseData {
   thread_id?: number;
   thread_title?: string;
   agent_used?: string;
+  agents_used?: string[];
   agent_trace?: Array<Record<string, unknown>>;
   structured_output?: Record<string, unknown>;
 }
@@ -358,6 +359,11 @@ export const api = {
   getCalendar: (userId: string, year: number, month: number) =>
     get<CalendarData>(
       `/api/dashboard/calendar?user_id=${encodeURIComponent(userId)}&year=${year}&month=${month}`,
+    ),
+
+  getWelcome: (userId: string) =>
+    get<{ message: string; subheading: string; suggestions: string[] }>(
+      `/chat/welcome?user_id=${encodeURIComponent(userId)}`,
     ),
 
   getChatThreads: (userId: string) =>

@@ -38,5 +38,6 @@ class AstraAgentState(TypedDict, total=False):
     confidence: float
     reason: str
     final_answer: str
+    agents_used: List[str]
     unified_context: Dict[str, Any]
     legacy_result: Dict[str, Any]
