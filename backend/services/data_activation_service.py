@@ -34,7 +34,7 @@ from rag.vector_store import (
     COLLECTION_TRANSACTIONS,
     upsert_knowledge_points,
 )
-from services.llm_service import call_llm, LLM_MODEL, LLM_URL
+from services.llm_service import call_llm, get_llm_model, get_llm_url, get_ollama_headers, LLM_TIMEOUT
 from services.financial_engine import (
     _EMI_IN_DESC,
     _RENT_IN_DESC,
@@ -188,16 +188,17 @@ def _store_category(description: str, cleaned: str, category: str) -> None:
 async def ai_categorize(description: str, semaphore: Optional[asyncio.Semaphore] = None) -> str:
     async def _request() -> str:
         payload = {
-            "model": LLM_MODEL,
+            "model": get_llm_model(),
             "prompt": _CATEGORY_PROMPT.format(description=description),
             "stream": False,
+            "options": {"num_predict": 128, "temperature": 0.0},
         }
         try:
-            async with httpx.AsyncClient(timeout=CATEGORY_TIMEOUT_SECONDS) as client:
+            async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
                 response = await client.post(
-                    LLM_URL,
+                    get_llm_url(),
                     json=payload,
-                    headers={"Authorization": "Bearer runpod"},
+                    headers=get_ollama_headers(),
                 )
                 response.raise_for_status()
                 return _standardize_category(response.json().get("response", ""))
@@ -213,16 +214,17 @@ async def ai_categorize(description: str, semaphore: Optional[asyncio.Semaphore]
 
 def _ai_categorize_sync(description: str) -> str:
     payload = {
-        "model": LLM_MODEL,
+        "model": get_llm_model(),
         "prompt": _CATEGORY_PROMPT.format(description=description),
         "stream": False,
+        "options": {"num_predict": 128, "temperature": 0.0},
     }
     try:
-        with httpx.Client(timeout=CATEGORY_TIMEOUT_SECONDS) as client:
+        with httpx.Client(timeout=LLM_TIMEOUT) as client:
             response = client.post(
-                LLM_URL,
+                get_llm_url(),
                 json=payload,
-                headers={"Authorization": "Bearer runpod"},
+                headers=get_ollama_headers(),
             )
             response.raise_for_status()
             return _standardize_category(response.json().get("response", ""))

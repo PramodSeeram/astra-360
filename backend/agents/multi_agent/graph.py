@@ -5,64 +5,80 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from models import User
-from services.agent_router import AgentRoute
 
 from .nodes import (
-    card_node,
-    credit_node,
-    default_node,
-    fraud_node,
-    spending_node,
     supervisor_node,
+    wealth_node,
+    teller_node,
+    claims_node,
+    scam_node,
+    synthesizer_node,
+    default_node,
 )
 from .state import AstraAgentState
 
 from langgraph.graph import END, StateGraph
+from langgraph.types import Send
 
-
-def _serialize_route(route: Optional[AgentRoute]) -> Dict[str, Any]:
-    if route is None:
-        return {}
-    return {
-        "agent": route.agent,
-        "category": route.category,
-        "confidence": route.confidence,
-        "reason": route.reason,
-        "keywords_matched": list(route.keywords_matched),
-    }
+# Nodes that participate in parallel fan-out (must match add_conditional_edges map).
+_PARALLEL_AGENT_NODES = frozenset(
+    {"wealth_agent", "teller_agent", "claims_agent", "scam_agent"},
+)
 
 
 def build_multi_agent_graph(db: Session, user: User):
     workflow = StateGraph(AstraAgentState)
 
+    # Add Nodes
     workflow.add_node("supervisor", lambda state: supervisor_node(state, db, user))
-    workflow.add_node("spending_agent", lambda state: spending_node(state, db, user))
-    workflow.add_node("credit_agent", lambda state: credit_node(state, db, user))
-    workflow.add_node("card_agent", lambda state: card_node(state, db, user))
-    workflow.add_node("fraud_agent", lambda state: fraud_node(state, db, user))
+    workflow.add_node("wealth_agent", lambda state: wealth_node(state, db, user))
+    workflow.add_node("teller_agent", lambda state: teller_node(state, db, user))
+    workflow.add_node("claims_agent", lambda state: claims_node(state, db, user))
+    workflow.add_node("scam_agent", lambda state: scam_node(state, db, user))
+    workflow.add_node("synthesizer", lambda state: synthesizer_node(state, db, user))
     workflow.add_node("default_agent", lambda state: default_node(state, db, user))
 
+    # Entry Point
     workflow.set_entry_point("supervisor")
+
+    # 🚀 PARALLEL FAN-OUT 
+    # The router returns a list of nodes to execute in parallel.
+    def route_supervisor(state: AstraAgentState):
+        agents = list(state.get("agents_to_run") or [])
+        if not agents:
+            return "default_agent"
+        if "default_agent" in agents:
+            return "default_agent"
+        specialized = [a for a in agents if a in _PARALLEL_AGENT_NODES]
+        if not specialized:
+            return "default_agent"
+        # LangGraph 0.6+: parallel branches require Send(...); a bare list of strings is unreliable.
+        if len(specialized) == 1:
+            return specialized[0]
+        return [Send(name, state) for name in specialized]
+
     workflow.add_conditional_edges(
         "supervisor",
-        lambda state: state.get("next_agent", "default_agent"),
+        route_supervisor,
         {
-            "spending_agent": "spending_agent",
-            "credit_agent": "credit_agent",
-            "card_agent": "card_agent",
-            "fraud_agent": "fraud_agent",
+            "wealth_agent": "wealth_agent",
+            "teller_agent": "teller_agent",
+            "claims_agent": "claims_agent",
+            "scam_agent": "scam_agent",
             "default_agent": "default_agent",
-        },
+        }
     )
 
-    for node_name in (
-        "spending_agent",
-        "credit_agent",
-        "card_agent",
-        "fraud_agent",
-        "default_agent",
-    ):
-        workflow.add_edge(node_name, END)
+    # 🚀 FAN-IN / AGGREGATION
+    # All parallel agent paths converge here automatically
+    workflow.add_edge("wealth_agent", "synthesizer")
+    workflow.add_edge("teller_agent", "synthesizer")
+    workflow.add_edge("claims_agent", "synthesizer")
+    workflow.add_edge("scam_agent", "synthesizer")
+
+    # Final Step
+    workflow.add_edge("synthesizer", END)
+    workflow.add_edge("default_agent", END)
 
     return workflow.compile()
 
@@ -72,7 +88,6 @@ def run_multi_agent_chat(
     user: User,
     message: str,
     memory: Optional[List[Dict[str, Any]]] = None,
-    route: Optional[AgentRoute] = None,
     agent_hint: Optional[str] = None,
 ) -> AstraAgentState:
     app = build_multi_agent_graph(db, user)
@@ -81,7 +96,8 @@ def run_multi_agent_chat(
         "message": message,
         "user_id": user.id,
         "agent_hint": agent_hint,
-        "route_hint": _serialize_route(route),
         "agent_trace": [],
+        "agent_responses": {},
+        "agents_to_run": [],
     }
     return app.invoke(initial_state)

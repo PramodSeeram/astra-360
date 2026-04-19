@@ -4,7 +4,7 @@ from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
 from models import get_user_by_external_id
-from agents.wealth_agent import call_llm, LLM_MODEL
+from services.llm_service import call_llm
 from services.context_builder import build_user_context
 import json
 

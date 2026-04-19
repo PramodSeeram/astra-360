@@ -1,7 +1,7 @@
 import logging
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
-from database import get_db
+from database import SessionLocal, get_db
 from sqlalchemy.orm import Session
 from fastapi import Depends, APIRouter, HTTPException
 from models import get_user_by_external_id, ChatMessage, ChatThread
@@ -9,6 +9,8 @@ from services.chat_service import build_chat_response
 from services.chat_policy import ACTIVATION_REQUIRED_RESPONSE
 from services.user_state import get_user_state
 from services.agent_router import route_query
+from services.decision_engine import run_decision_engine
+from services.card_explainer import explain_decision
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["Agent Chat"])
@@ -51,6 +53,53 @@ class ChatResponse(BaseModel):
     confidence: Optional[float] = None
     data: Optional[Dict[str, Any]] = None
 
+
+# ---------------------------------------------------------------------------
+# Hybrid decision + LLM explanation handler
+# ---------------------------------------------------------------------------
+
+def _handle_card_recommendation(
+    message: str,
+    thread_id: int,
+    thread_title: str,
+) -> Optional[ChatResponse]:
+    """
+    Run the deterministic decision engine first.
+    If a rule fires, call the LLM for explanation only and return immediately.
+    Returns None when no rule matches so the normal pipeline continues.
+    """
+    decision = run_decision_engine(message)
+    if decision is None:
+        return None
+
+    # LLM expands the reasoning — it cannot override the card choice
+    explanation = explain_decision(decision, message)
+
+    logger.info(
+        "card_recommendation.decision card=%s rule=%s",
+        decision.card,
+        decision.matched_rule,
+    )
+
+    return ChatResponse(
+        type="card_recommendation",
+        response=(
+            f"**Recommended Card:** {decision.card}\n\n"
+            f"**Why:** {explanation}"
+        ),
+        actions=[],
+        sources=["rule_engine"],
+        confidence=1.0,
+        data={
+            "answer": decision.card,
+            "reason": explanation,
+            "matched_rule": decision.matched_rule,
+            "decision_source": "rule_engine",
+            "thread_id": thread_id,
+            "thread_title": thread_title,
+        },
+    )
+
 @router.post("", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
     """
@@ -75,7 +124,20 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(thread)
 
-        # 1.5 Detect route ONCE. Downstream services must never re-route.
+        # 1.5 — Hybrid Decision Engine: deterministic card recommendation.
+        # This intercepts the request BEFORE the LLM pipeline so the LLM
+        # never makes the card choice — it only expands the explanation.
+        card_response = _handle_card_recommendation(
+            request.message, thread.id, thread.title
+        )
+        if card_response is not None:
+            # Persist both sides of the conversation
+            db.add(ChatMessage(thread_id=thread.id, role="user", content=request.message))
+            db.add(ChatMessage(thread_id=thread.id, role="assistant", content=card_response.response))
+            db.commit()
+            return card_response
+
+        # 1.6 Detect route ONCE. Downstream services must never re-route.
         route = route_query(request.message)
 
         # 1.6 Check User State for Activation Prompt — only block generic
@@ -133,6 +195,9 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             for msg in reversed(recent_messages)
         ]
 
+        thread_id_for_save = thread.id
+        thread_title_snapshot = thread.title or ""
+
         # 4. Dispatch to chat service with the precomputed route.
         result = build_chat_response(
             db=db,
@@ -143,15 +208,35 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             agent_hint=request.agent_hint,
         )
 
-        # 5. Save Assistant Message
-        assistant_msg = ChatMessage(thread_id=thread.id, role="assistant", content=result["response"])
-        db.add(assistant_msg)
-        db.commit()
+        # 5. Save assistant message on a fresh DB session. Long LLM work above can leave the
+        # request-scoped MySQL connection idle past server timeout; pymysql then raises
+        # InterfaceError on the next write if we reuse the same connection.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            db.connection().invalidate()
+        except Exception:
+            pass
+
+        with SessionLocal() as write_db:
+            write_db.add(
+                ChatMessage(
+                    thread_id=thread_id_for_save,
+                    role="assistant",
+                    content=result["response"],
+                )
+            )
+            write_db.commit()
+            refreshed = write_db.get(ChatThread, thread_id_for_save)
+            if refreshed and refreshed.title:
+                thread_title_snapshot = refreshed.title
 
         merged_data = {
             **(result.get("data") or {}),
-            "thread_id": thread.id,
-            "thread_title": thread.title,
+            "thread_id": thread_id_for_save,
+            "thread_title": thread_title_snapshot,
             "route": {
                 "agent": route.agent,
                 "category": route.category,

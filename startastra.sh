@@ -14,10 +14,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+if [[ -f .env ]]; then
+  echo "[startastra] Loading configuration from .env"
+  # shellcheck disable=SC2046
+  export $(grep -v '^#' .env | xargs)
+fi
+
 QDRANT_HTTP_PORT="${QDRANT_HTTP_PORT:-6333}"
 QDRANT_GRPC_PORT="${QDRANT_GRPC_PORT:-6334}"
-BACKEND_PORT="${BACKEND_PORT:-${PORT:-8000}}"
-UI_PORT="${UI_PORT:-8080}"
+BACKEND_PORT="${BACKEND_PORT:-${PORT:-8005}}"
+UI_PORT="${UI_PORT:-8082}"
 
 LOG_DIR="${LOG_DIR:-$ROOT/.astra-logs}"
 mkdir -p "$LOG_DIR"

@@ -2,8 +2,7 @@
 
 The router is called exactly once per request in ``chat_routes`` and the
 resulting ``AgentRoute`` is threaded down to ``chat_service`` so we never
-re-route mid-pipeline (which was previously causing divergent behavior
-between the activation gate and the answering layer).
+re-route mid-pipeline.
 """
 
 from dataclasses import dataclass, field
@@ -19,21 +18,27 @@ class AgentRoute:
     keywords_matched: Tuple[str, ...] = field(default_factory=tuple)
 
 
+# Updated to match the new Multi-Agent Digital Brain structure
 _ROUTING_TABLE: List[Tuple[str, str, Tuple[str, ...]]] = [
     (
         "scam_agent",
         "scam",
-        ("scam", "fraud", "otp", "phishing", "fake call", "upi fraud"),
+        ("scam", "fraud", "otp", "phishing", "fake call", "upi fraud", "suspicious"),
     ),
     (
-        "insurance_agent",
+        "claims_agent",
         "insurance",
-        ("insurance", "policy", "premium", "claim", "sum assured", "mediclaim"),
+        ("insurance", "policy", "premium", "claim", "sum assured", "mediclaim", "lic", "hdfc ergo"),
     ),
     (
-        "tax_agent",
-        "tax",
-        ("tax", "itr", "gst", "80c", "tds", "deduction", "regime"),
+        "wealth_agent",
+        "wealth",
+        ("wealth", "invest", "portfolio", "credit", "cibil", "score", "loan", "card", "spending", "budget"),
+    ),
+    (
+        "teller_agent",
+        "banking",
+        ("teller", "balance", "account", "transaction", "statement", "debit", "credit limit"),
     ),
 ]
 
@@ -42,8 +47,8 @@ def route_query(query: str) -> AgentRoute:
     text = (query or "").lower().strip()
     if not text:
         return AgentRoute(
-            agent="finance_agent",
-            category="finance",
+            agent="wealth_agent",
+            category="wealth",
             confidence=0.3,
             reason="empty_query_default",
         )
@@ -52,6 +57,10 @@ def route_query(query: str) -> AgentRoute:
     for agent, category, keywords in _ROUTING_TABLE:
         hits = tuple(kw for kw in keywords if kw in text)
         if hits:
+            # For the demo, if multiple match, we take the first or specifically look for insurance/claims
+            if "insurance" in text or "policy" in text:
+                best_match = ("claims_agent", "insurance", hits)
+                break
             best_match = (agent, category, hits)
             break
 
@@ -66,8 +75,8 @@ def route_query(query: str) -> AgentRoute:
         )
 
     return AgentRoute(
-        agent="finance_agent",
-        category="finance",
+        agent="wealth_agent",
+        category="wealth",
         confidence=0.6,
         reason="default_finance",
     )

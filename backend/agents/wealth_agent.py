@@ -1,8 +1,6 @@
 import os
 import logging
 import json
-import httpx
-import time
 import re
 from typing import Dict, Any, List, Optional
 from rag.embeddings import generate_single_embedding
@@ -14,12 +12,9 @@ from rag.vector_store import (
     create_category_filter
 )
 
-logger = logging.getLogger(__name__)
+from services.llm_service import call_llm
 
-# Configure LLM Client (RunPod GPU - Ollama)
-LLM_URL = os.getenv("LLM_URL", "https://0ruool8gerdycr-11434.proxy.runpod.net/api/generate")
-LLM_MODEL = os.getenv("LLM_MODEL", "mistral")
-OLLAMA_ROOT_URL = LLM_URL.replace("/api/generate", "")
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """
 You are Astra 360, a smart financial co-pilot.
@@ -124,43 +119,6 @@ SMALLTALK_RESPONSES = {
     "hey": "Hey. I can help with spending, bills, credit, and planning.",
 }
 
-
-def call_llm(prompt: str, temperature: float = 0.1) -> str:
-    """Calls Ollama generate API with retries and timeout."""
-    logger.debug("LLM prompt:\n%s", prompt)
-    payload = {
-        "model": LLM_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": temperature
-        }
-    }
-
-    with httpx.Client() as client:
-        # Check health first
-        try:
-            client.get(OLLAMA_ROOT_URL, timeout=5.0, headers={"Authorization": "Bearer runpod"})
-        except Exception:
-            pass  # ignore and try actual POST
-
-        for attempt in range(1, 4):
-            try:
-                response = client.post(
-                    LLM_URL,
-                    json=payload,
-                    timeout=120.0,
-                    headers={"Authorization": "Bearer runpod"}
-                )
-                response.raise_for_status()
-                data = response.json()
-                return data.get("response", "")
-            except Exception as e:
-                logger.warning(f"LLM API Error on attempt {attempt}: {e}")
-                if attempt == 3:
-                    raise RuntimeError(f"Failed to fetch from LLM: {e}")
-                time.sleep(2)
-    return ""
 
 def detect_agent(query: str) -> str:
     """Deterministic routing for the conversational financial agents."""

@@ -37,7 +37,7 @@ cp .env.example .env
 | `QDRANT_PORT` | No | Qdrant port (default `6333`) |
 | `QDRANT_API_KEY` | No | If your Qdrant instance uses API key auth |
 | `LLM_URL` | No | Default `http://localhost:11434/api/generate` |
-| `LLM_MODEL` | No | Default `mistral` |
+| `LLM_MODEL` | No | Default `astra-llm:latest` (see also `OLLAMA_MODEL`) |
 | `MY_REAL_PHONE` | No | 10-digit Indian number without country code; only this number gets real Twilio SMS if Twilio is configured |
 | `TWILIO_*` | No | Optional; for real OTP SMS (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`) |
 | `USE_MULTI_AGENT` | No | Chat multi-agent graph (default on) |
