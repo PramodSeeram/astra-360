@@ -5,6 +5,7 @@ resulting ``AgentRoute`` is threaded down to ``chat_service`` so we never
 re-route mid-pipeline.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
@@ -31,16 +32,117 @@ _ROUTING_TABLE: List[Tuple[str, str, Tuple[str, ...]]] = [
         ("insurance", "policy", "premium", "claim", "sum assured", "mediclaim", "lic", "hdfc ergo"),
     ),
     (
+        "spending_agent",
+        "spending",
+        (
+            "spend",
+            "spent",
+            "expense",
+            "expenses",
+            "swiggy",
+            "zomato",
+            "food",
+            "where did i spend",
+            "breakdown",
+            "analysis",
+        ),
+    ),
+    (
+        "budget_agent",
+        "budget",
+        (
+            "budget",
+            "income",
+            "salary",
+            "payroll",
+            "savings",
+            "save money",
+            "how much do i save",
+            "plan my budget",
+        ),
+    ),
+    (
         "wealth_agent",
         "wealth",
-        ("wealth", "invest", "portfolio", "credit", "cibil", "score", "loan", "card", "spending", "budget"),
+        (
+            "wealth",
+            "invest",
+            "portfolio",
+            "cibil",
+            "loan",
+            "credit card",
+            "best credit card",
+            "which credit card",
+            "card benefit",
+            "best card",
+            "which card",
+        ),
     ),
     (
         "teller_agent",
         "banking",
-        ("teller", "balance", "account", "transaction", "statement", "debit", "credit limit"),
+        (
+            "teller",
+            "balance",
+            "account",
+            "transaction",
+            "statement",
+            "debit",
+            "credit limit",
+            "how much money do i have",
+            "current balance",
+            "my balance",
+        ),
     ),
 ]
+
+
+def _route_money_query(text: str) -> AgentRoute | None:
+    if "insurance" in text or "policy" in text:
+        return AgentRoute(
+            agent="claims_agent",
+            category="insurance",
+            confidence=0.9,
+            reason="keyword_match",
+            keywords_matched=("insurance",) if "insurance" in text else ("policy",),
+        )
+    if (
+        "credit card" in text
+        or "best credit card" in text
+        or "which credit card" in text
+        or "card benefit" in text
+        or ("best" in text and "card" in text)
+    ):
+        return AgentRoute(
+            agent="wealth_agent",
+            category="wealth",
+            confidence=0.9,
+            reason="card_choice_query",
+        )
+    if any(phrase in text for phrase in ("where is my money going", "money going", "outflow", "cash flow")):
+        return AgentRoute(
+            agent="spending_agent",
+            category="spending",
+            confidence=0.9,
+            reason="cashflow_spend_query",
+        )
+    if (
+        "how much money" in text and "do i have" in text
+    ) or "current balance" in text or "my balance" in text:
+        return AgentRoute(
+            agent="teller_agent",
+            category="banking",
+            confidence=0.9,
+            reason="balance_query",
+        )
+    if re.search(r"\bsaving\b", text) or re.search(r"\bsave\b", text):
+        return AgentRoute(
+            agent="budget_agent",
+            category="budget",
+            confidence=0.8,
+            reason="budget_query",
+        )
+    return None
 
 
 def route_query(query: str) -> AgentRoute:
@@ -52,6 +154,10 @@ def route_query(query: str) -> AgentRoute:
             confidence=0.3,
             reason="empty_query_default",
         )
+
+    routed = _route_money_query(text)
+    if routed is not None:
+        return routed
 
     best_match: Tuple[str, str, Tuple[str, ...]] | None = None
     for agent, category, keywords in _ROUTING_TABLE:

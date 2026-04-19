@@ -8,6 +8,8 @@ from models import User
 
 from .nodes import (
     supervisor_node,
+    spending_node,
+    budget_node,
     wealth_node,
     teller_node,
     claims_node,
@@ -22,7 +24,7 @@ from langgraph.types import Send
 
 # Nodes that participate in parallel fan-out (must match add_conditional_edges map).
 _PARALLEL_AGENT_NODES = frozenset(
-    {"wealth_agent", "teller_agent", "claims_agent", "scam_agent"},
+    {"spending_agent", "budget_agent", "wealth_agent", "teller_agent", "claims_agent", "scam_agent"},
 )
 
 
@@ -31,6 +33,8 @@ def build_multi_agent_graph(db: Session, user: User):
 
     # Add Nodes
     workflow.add_node("supervisor", lambda state: supervisor_node(state, db, user))
+    workflow.add_node("spending_agent", lambda state: spending_node(state, db, user))
+    workflow.add_node("budget_agent", lambda state: budget_node(state, db, user))
     workflow.add_node("wealth_agent", lambda state: wealth_node(state, db, user))
     workflow.add_node("teller_agent", lambda state: teller_node(state, db, user))
     workflow.add_node("claims_agent", lambda state: claims_node(state, db, user))
@@ -61,6 +65,8 @@ def build_multi_agent_graph(db: Session, user: User):
         "supervisor",
         route_supervisor,
         {
+            "spending_agent": "spending_agent",
+            "budget_agent": "budget_agent",
             "wealth_agent": "wealth_agent",
             "teller_agent": "teller_agent",
             "claims_agent": "claims_agent",
@@ -71,6 +77,8 @@ def build_multi_agent_graph(db: Session, user: User):
 
     # 🚀 FAN-IN / AGGREGATION
     # All parallel agent paths converge here automatically
+    workflow.add_edge("spending_agent", "synthesizer")
+    workflow.add_edge("budget_agent", "synthesizer")
     workflow.add_edge("wealth_agent", "synthesizer")
     workflow.add_edge("teller_agent", "synthesizer")
     workflow.add_edge("claims_agent", "synthesizer")

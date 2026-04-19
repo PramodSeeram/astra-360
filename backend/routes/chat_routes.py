@@ -15,6 +15,46 @@ from services.card_explainer import explain_decision
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["Agent Chat"])
 
+
+def _compound_card_and_finance_query(message: str) -> bool:
+    """
+    When the user combines a card/credit question with spending, budget, or savings
+    in the same utterance, do not short-circuit into the deterministic card engine —
+    the multi-agent graph should handle both intents.
+    """
+    m = (message or "").lower()
+    if not any(sep in m for sep in (" and ", " & ", ";")):
+        return False
+    cardish = any(
+        k in m
+        for k in (
+            "card",
+            "credit card",
+            "which card",
+            "best card",
+            "cibil",
+            "credit score",
+        )
+    )
+    finance_other = any(
+        k in m
+        for k in (
+            "spend",
+            "spent",
+            "spending",
+            "expense",
+            "expenses",
+            "how much",
+            "budget",
+            "save",
+            "saving",
+            "savings",
+            "income",
+            "analyze my",
+        )
+    )
+    return cardish and finance_other
+
 class ChatRequest(BaseModel):
     user_id: str
     message: str
@@ -127,9 +167,11 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
         # 1.5 — Hybrid Decision Engine: deterministic card recommendation.
         # This intercepts the request BEFORE the LLM pipeline so the LLM
         # never makes the card choice — it only expands the explanation.
-        card_response = _handle_card_recommendation(
-            request.message, thread.id, thread.title
-        )
+        card_response = None
+        if not _compound_card_and_finance_query(request.message):
+            card_response = _handle_card_recommendation(
+                request.message, thread.id, thread.title
+            )
         if card_response is not None:
             # Persist both sides of the conversation
             db.add(ChatMessage(thread_id=thread.id, role="user", content=request.message))
