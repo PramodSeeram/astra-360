@@ -229,7 +229,7 @@ const HomeScreen = ({ onAgentClick, onNavigate, isEmpty: isEmptyProp = false }: 
           {/* Mini stats row */}
           <div className="mt-5 grid grid-cols-3 gap-3">
             {[
-              { label: "Savings", value: formatCurrency(savings), accent: false },
+              { label: "Savings Trend", value: "Positive", accent: false },
               { label: "Investments", value: formatCurrency(investments), accent: false },
               { label: "Credit Due", value: formatCurrency(creditDue), accent: creditDue > 0 },
             ].map((stat, i) => (

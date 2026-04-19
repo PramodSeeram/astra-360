@@ -194,6 +194,7 @@ export interface CardsData {
     amount: string;
     time: string;
     emoji: string;
+    card_id?: number;
   }>;
   has_data: boolean;
   source: string;

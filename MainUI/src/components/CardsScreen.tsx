@@ -121,17 +121,28 @@ const CardsScreen = () => {
                 onClick={() => setActiveIndex(i)}
                 className="absolute inset-x-0 cursor-pointer"
                 initial={false}
+                drag={isActive ? "x" : false}
+                dragConstraints={{ left: 0, right: 0 }}
+                onDragEnd={(_, info) => {
+                  if (info.offset.x > 100 && activeIndex > 0) {
+                    setActiveIndex(activeIndex - 1);
+                  } else if (info.offset.x < -100 && activeIndex < cards.length - 1) {
+                    setActiveIndex(activeIndex + 1);
+                  }
+                }}
                 animate={{
                   y: isBehind ? offset * 18 : 0,
                   scale: isBehind ? 1 - offset * 0.06 : 1,
-                  opacity: isGone ? 0 : isBehind ? 1 - offset * 0.2 : 1,
+                  opacity: isActive ? 1 : isGone ? 0 : 1 - offset * 0.2,
                   rotateX: isActive ? 0 : isBehind ? -5 : 5,
                   zIndex: cards.length - Math.abs(offset),
+                  x: 0, // Reset x after drag if needed
                 }}
                 transition={{ type: "spring", stiffness: 300, damping: 30 }}
                 style={{
                   perspective: "1200px",
                   transformStyle: "preserve-3d",
+                  touchAction: "none",
                 }}
               >
                 <div
@@ -285,12 +296,15 @@ const CardsScreen = () => {
             <button className="text-xs text-[#CCFF00] font-medium">View All</button>
           </div>
           <div className="space-y-2">
-            {transactions.map((txn, i) => (
+            {transactions
+              .filter((txn) => txn.card_id === activeCard.id)
+              .slice(0, 10)
+              .map((txn, i) => (
               <motion.div
                 key={i}
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.35 + i * 0.06 }}
+                transition={{ delay: 0.1 + i * 0.05 }}
                 className="rounded-xl bg-[#1E1E1E] border border-white/5 p-3.5 flex items-center gap-3"
               >
                 <span className="text-lg">{txn.emoji}</span>

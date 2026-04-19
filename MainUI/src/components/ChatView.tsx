@@ -60,6 +60,8 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [agentHint, setAgentHint] = useState(initialAgent);
   const [welcomeData, setWelcomeData] = useState<WelcomeData | null>(null);
+  const [questionQueue, setQuestionQueue] = useState<string[]>([]);
+  const isInternalRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const initSent = useRef(false);
 
@@ -151,13 +153,23 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
     const text = (forcedText ?? input).trim();
     if (!text || !userId) return;
 
-    if (!forcedText) {
-      setInput("");
+    if (typing && !isInternalRef.current) {
+      if (questionQueue.length >= 5) {
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now(), role: "ai", text: "Queue full! Please wait for current questions to finish." }
+        ]);
+        return;
+      }
+      setQuestionQueue((prev) => [...prev, text]);
+      setInput(""); // Clear input when queuing too
+      return;
     }
 
     const optimisticId = Date.now();
     setMessages((prev) => [...prev, { id: optimisticId, role: "user", text }]);
     setTyping(true);
+    setInput(""); // Clear input immediately
 
     try {
       const requestAgentHint = activeThreadId === null ? agentHint : undefined;
@@ -191,9 +203,22 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
       ]);
     } finally {
       setTyping(false);
+      isInternalRef.current = false;
       setAgentHint(undefined);
     }
   };
+
+  useEffect(() => {
+    if (!typing && questionQueue.length > 0) {
+      const nextMessage = questionQueue[0];
+      setQuestionQueue((prev) => prev.slice(1));
+      isInternalRef.current = true;
+      // Small delay to make it feel natural
+      setTimeout(() => {
+        handleSend(nextMessage);
+      }, 600);
+    }
+  }, [typing, questionQueue]);
 
   useEffect(() => {
     if (input === initialMessage && initialMessage && initSent.current) {
@@ -353,17 +378,43 @@ const ChatView = ({ initialAgent, initialMessage, onBack }: Props) => {
         )}
 
         {typing && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
-            <div className="bg-card border border-border/30 rounded-2xl rounded-bl-md px-4 py-3 flex items-center gap-1">
-              {[0, 1, 2].map((i) => (
-                <motion.div
-                  key={i}
-                  className="h-1.5 w-1.5 rounded-full bg-primary"
-                  animate={{ opacity: [0.3, 1, 0.3] }}
-                  transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
-                />
-              ))}
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col gap-2">
+            <div className="flex justify-start">
+              <div className="bg-card border border-border/30 rounded-2xl rounded-bl-md px-4 py-3 flex items-center gap-1">
+                {[0, 1, 2].map((i) => (
+                  <motion.div
+                    key={i}
+                    className="h-1.5 w-1.5 rounded-full bg-primary"
+                    animate={{ opacity: [0.3, 1, 0.3] }}
+                    transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
+                  />
+                ))}
+              </div>
             </div>
+            {questionQueue.length > 0 && (
+              <div className="flex flex-col gap-1.5 pl-1 max-w-[80%]">
+                <div className="flex items-center gap-1.5 opacity-60">
+                  <div className="flex gap-0.5">
+                    {questionQueue.map((_, idx) => (
+                      <div key={idx} className="w-1 h-1 rounded-full bg-primary/60 animate-pulse" />
+                    ))}
+                  </div>
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">
+                    Next in Queue ({questionQueue.length})
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {questionQueue.map((q, idx) => (
+                    <div key={idx} className="flex gap-2 items-start">
+                      <span className="text-[10px] text-primary/40 font-mono mt-0.5">{idx + 1}.</span>
+                      <p className="text-[11px] text-muted-foreground italic line-clamp-1 border-l border-primary/20 pl-2">
+                        {q}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </motion.div>
         )}
       </div>

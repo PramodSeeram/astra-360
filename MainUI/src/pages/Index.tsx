@@ -94,9 +94,9 @@ const Index = () => {
     setActiveTab("home");
   };
 
-  const handleAskImprove = () => {
+  const handleAskImprove = (score: number) => {
     setChatAgent(undefined);
-    setChatInitialMessage("How can I improve my CIBIL credit score? My current score is 780.");
+    setChatInitialMessage(`How can I improve my CIBIL credit score? My current score is ${score}.`);
     setView("chat");
     setActiveTab("chat");
   };
@@ -143,7 +143,7 @@ const Index = () => {
           </motion.div>
         ) : view === "credit-score" ? (
           <motion.div key="credit-score" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
-            <CreditScoreDetail onBack={handleCreditScoreBack} onAskImprove={handleAskImprove} />
+            <CreditScoreDetail onBack={handleCreditScoreBack} onAskImprove={(s) => handleAskImprove(s)} />
           </motion.div>
         ) : view === "alerts" ? (
           <motion.div key="alerts" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.25 }}>

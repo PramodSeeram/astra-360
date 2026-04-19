@@ -18,7 +18,7 @@ import { api, HomeSummary } from "@/lib/api";
 
 interface Props {
   onBack: () => void;
-  onAskImprove: () => void;
+  onAskImprove: (score: number) => void;
 }
 
 /* ─── Factor data (SuperMoney-style) ─── */
@@ -78,7 +78,7 @@ const factors = [
 /* ─── Account summary ─── */
 const accounts = [
   { label: "Active Loans", value: "2", detail: "Home Loan, Car Loan" },
-  { label: "Credit Cards", value: "4", detail: "Active accounts" },
+  { label: "Credit Cards", value: "3", detail: "Active accounts" },
   { label: "Late Payments", value: "0", detail: "In last 12 months" },
   { label: "Total Credit Limit", value: "₹11.5L", detail: "Across all cards" },
 ];
@@ -375,7 +375,7 @@ const CreditScoreDetail = ({ onBack, onAskImprove }: Props) => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.65 }}
         whileTap={{ scale: 0.97 }}
-        onClick={onAskImprove}
+        onClick={() => onAskImprove(score)}
         className={`w-full flex items-center justify-center gap-3 rounded-2xl bg-[#CCFF00] py-4 shadow-[0_0_20px_rgba(204,255,0,0.3)] mb-3 ${!hasData ? 'opacity-50' : ''}`}
       >
         <MessageCircle size={18} className="text-black" />

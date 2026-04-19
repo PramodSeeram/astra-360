@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from models import User
 
+from database import SessionLocal
 from .nodes import (
     supervisor_node,
     spending_node,
@@ -32,17 +33,28 @@ _PARALLEL_AGENT_NODES = frozenset(
 def build_multi_agent_graph(db: Session, user: User):
     workflow = StateGraph(AstraAgentState)
 
+    def _get_node_wrapper(node_func):
+        def wrapper(state: AstraAgentState):
+            user_id = state.get("user_id")
+            with SessionLocal() as db_session:
+                user_obj = db_session.query(User).filter(User.id == user_id).first()
+                if not user_obj:
+                    # Fallback or error
+                    return node_func(state, db_session, user) # Use original user as fallback
+                return node_func(state, db_session, user_obj)
+        return wrapper
+
     # Add Nodes
-    workflow.add_node("supervisor", lambda state: supervisor_node(state, db, user))
-    workflow.add_node("spending_agent", lambda state: spending_node(state, db, user))
-    workflow.add_node("budget_agent", lambda state: budget_node(state, db, user))
-    workflow.add_node("wealth_agent", lambda state: wealth_node(state, db, user))
-    workflow.add_node("teller_agent", lambda state: teller_node(state, db, user))
-    workflow.add_node("claims_agent", lambda state: claims_node(state, db, user))
-    workflow.add_node("scam_agent", lambda state: scam_node(state, db, user))
-    workflow.add_node("billing_agent", lambda state: billing_node(state, db, user))
-    workflow.add_node("synthesizer", lambda state: synthesizer_node(state, db, user))
-    workflow.add_node("default_agent", lambda state: default_node(state, db, user))
+    workflow.add_node("supervisor", _get_node_wrapper(supervisor_node))
+    workflow.add_node("spending_agent", _get_node_wrapper(spending_node))
+    workflow.add_node("budget_agent", _get_node_wrapper(budget_node))
+    workflow.add_node("wealth_agent", _get_node_wrapper(wealth_node))
+    workflow.add_node("teller_agent", _get_node_wrapper(teller_node))
+    workflow.add_node("claims_agent", _get_node_wrapper(claims_node))
+    workflow.add_node("scam_agent", _get_node_wrapper(scam_node))
+    workflow.add_node("billing_agent", _get_node_wrapper(billing_node))
+    workflow.add_node("synthesizer", _get_node_wrapper(synthesizer_node))
+    workflow.add_node("default_agent", _get_node_wrapper(default_node))
 
     # Entry Point
     workflow.set_entry_point("supervisor")

@@ -346,7 +346,7 @@ def get_home_data(db: Session, external_id: str) -> dict | None:
         "last_name":         last_name,
         "initials":          initials,
         "balance":           total_balance,
-        "savings":           total_savings,
+        "savings":           abs(total_savings),
         "monthly_spend":     monthly_spend,
         "investments":       total_investments,
         "credit_due":        total_credit_due,
@@ -552,6 +552,7 @@ def get_cards_data(db: Session, external_id: str) -> dict | None:
             "emoji":    CATEGORY_EMOJI.get(t.category, "📦"),
             "category": t.category,
             "type":     t.type,
+            "card_id":  t.card_id,
         }
         for t in sorted(user.transactions, key=lambda x: x.date, reverse=True)[:50]
     ]
@@ -763,7 +764,7 @@ def get_profile_data(db: Session, external_id: str) -> dict | None:
         "email":          user.email,
         "is_onboarded":   True,
         "linked_accounts": [
-            {"bank": "Linked MySQL", "type": "Savings", "acc_no": f"•••• {user.id}"}
+            {"bank": "Kotak Mahindra Bank", "short_name": "KOTAK", "type": "Savings", "acc_no": "•••• 5821"}
         ],
         "has_data":       True,
         "source":         "mysql_db",

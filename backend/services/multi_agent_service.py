@@ -73,6 +73,21 @@ def run_multi_agent_service(
     # We can list all agents that were run for the UI trace
     agents_run = state.get("agents_to_run") or []
     agents_used = state.get("agents_used") or agents_run or ["default_agent"]
+    
+    # Generate a descriptive multi-agent badge
+    AGENT_EMOJIS = {
+        "spending_agent": "🍔 Spending",
+        "budget_agent": "💰 Budget",
+        "wealth_agent": "💳 Wealth",
+        "teller_agent": "🏦 Teller",
+        "scam_agent": "🛡️ Scam",
+        "claims_agent": "📄 Claims",
+        "billing_agent": "📅 Billing",
+        "default_agent": "⚙️ Astra"
+    }
+    
+    display_agents = [AGENT_EMOJIS.get(a, a) for a in agents_run]
+    composite_type = " • ".join(display_agents) if display_agents else "Multi-Agent"
     primary_agent = agents_run[0] if agents_run else "default_agent"
 
     logger.info(
@@ -83,7 +98,7 @@ def run_multi_agent_service(
     )
 
     return build_response_envelope(
-        type_name=primary_agent,
+        type_name=composite_type,
         response=response_text,
         sources=list(state.get("sources") or ["db"]),
         reason=str(state.get("reason") or "multi_agent_synthesis"),

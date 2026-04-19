@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # (bank_name, card_type, last4, limit, balance) — stable identifiers for enforcement
 CANONICAL_CARD_SPECS: List[tuple[str, str, str, float, float]] = [
     ("HDFC Bank", "Swiggy Credit Card", "2109", 350_000.0, 9_800.0),
-    ("Federal Bank", "Swiggy Credit Card", "8765", 500_000.0, 42_000.0),
+    ("Federal Bank", "Scapia", "8765", 500_000.0, 42_000.0),
     ("SBI", "Cashback Credit Card", "4321", 200_000.0, 12_500.0),
 ]
 

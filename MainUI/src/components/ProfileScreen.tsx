@@ -12,6 +12,8 @@ import {
   Smartphone,
   KeyRound,
   Loader2,
+  Car,
+  Bike,
 } from "lucide-react";
 import { api, ProfileData } from "@/lib/api";
 
@@ -186,11 +188,28 @@ const ProfileScreen = ({ onLogout }: Props) => {
                 className="rounded-2xl bg-[#1E1E1E] border border-white/5 px-4 py-3.5 flex items-center gap-3"
               >
                 <div
-                  className={`h-10 w-10 rounded-xl bg-gray-700 flex items-center justify-center shrink-0`}
+                  className={`h-10 w-10 rounded-xl bg-white flex items-center justify-center shrink-0 overflow-hidden border border-white/10`}
                 >
-                  <span className="text-white font-display text-[10px] font-bold">
-                    {acc.short_name}
-                  </span>
+                  {acc.short_name === "KOTAK" ? (
+                    <div className="relative h-10 w-10 flex items-center justify-center">
+                      {/* Background fallback */}
+                      <div className="absolute inset-0 bg-[#005ea8] rounded-xl flex items-center justify-center font-extrabold text-white text-[18px]">
+                        K
+                      </div>
+                      <img 
+                        src="https://logos-download.com/wp-content/uploads/2016/06/Kotak_Mahindra_Bank_logo.png" 
+                        alt="Kotak" 
+                        className="relative z-10 h-full w-full object-contain p-1"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <span className="text-black font-display text-[11px] font-extrabold">
+                      {acc.short_name}
+                    </span>
+                  )}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-display text-sm font-semibold text-white truncate">
@@ -217,6 +236,52 @@ const ProfileScreen = ({ onLogout }: Props) => {
         >
           + Link Another Account
         </motion.button>
+      </motion.div>
+
+      {/* Insurance Section */}
+      <motion.div
+        initial={{ opacity: 0, y: 15 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25 }}
+        className="mb-6"
+      >
+        <div className="flex items-center gap-2 mb-3">
+          <Shield size={14} className="text-[#CCFF00]" />
+          <h2 className="font-display text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
+            Insurance Details
+          </h2>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2.5">
+          {[
+            { title: "Life Insurance", detail: "Policy ID: LIFE-XXXX", value: "₹10,00,000", Icon: Shield, color: "text-emerald-400" },
+            { title: "Mobile Insurance", detail: "Slice Protect", value: "₹20,000", Icon: Smartphone, color: "text-blue-400" },
+            { title: "Vehicle Insurance", detail: "Comprehensive", value: "80% + ₹2,000 deductible", Icon: Car, color: "text-amber-400" },
+            { title: "Bike Insurance", detail: "Standard", value: "80% + ₹2,000 deductible", Icon: Bike, color: "text-violet-400" },
+          ].map((ins, i) => (
+            <motion.div
+              key={i}
+              className="rounded-2xl bg-[#1E1E1E] border border-white/5 px-4 py-3.5 flex items-center gap-3"
+              whileHover={{ scale: 1.01 }}
+            >
+              <div className={`h-10 w-10 rounded-xl bg-white/5 flex items-center justify-center shrink-0`}>
+                <ins.Icon size={18} className={ins.color} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-display text-sm font-semibold text-white">
+                  {ins.title}
+                </p>
+                <p className="text-[10px] text-gray-500 uppercase tracking-tight">
+                  {ins.detail}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs font-bold text-white">{ins.value}</p>
+                <p className="text-[9px] text-[#CCFF00]/60 font-medium">Covered</p>
+              </div>
+            </motion.div>
+          ))}
+        </div>
       </motion.div>
 
       {/* Security Settings */}
